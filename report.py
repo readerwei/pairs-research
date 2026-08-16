@@ -37,6 +37,52 @@ MAX_OOS_DRAWDOWN = -0.15
 MIN_SHARPE_RETENTION = 0.50      # OOS sharpe as a fraction of IS sharpe
 
 
+def tear_sheets(out_dir):
+    """pyfolio stats + tear sheet PNGs for every OOS perf frame in the run.
+
+    Reads the pickles backtest.py saved rather than re-running anything, so the
+    out-of-sample window is still only simulated once.
+
+    Returns {pair: stats Series}. Empty (with a printed note) if pyfolio is not
+    installed -- the rest of the report does not depend on it.
+    """
+    perf_dir = os.path.join(out_dir, 'perf')
+    if not os.path.isdir(perf_dir):
+        return {}
+
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import pyfolio_compat  # noqa: F401  (patches pyfolio for pandas 1.x)
+        import pyfolio
+        from pyfolio.timeseries import perf_stats
+        from pyfolio.utils import extract_rets_pos_txn_from_zipline
+    except ImportError as e:
+        print('pyfolio unavailable (%s) -- skipping tear sheets' % e)
+        return {}
+
+    ts_dir = os.path.join(out_dir, 'tearsheets')
+    if not os.path.isdir(ts_dir):
+        os.makedirs(ts_dir)
+
+    stats = {}
+    for fn in sorted(os.listdir(perf_dir)):
+        if not fn.endswith('_oos.pkl'):
+            continue
+        pair = fn[:-len('_oos.pkl')].replace('_', '/')
+        perf = pd.read_pickle(os.path.join(perf_dir, fn))
+        rets, pos, txn = extract_rets_pos_txn_from_zipline(perf)
+        stats[pair] = perf_stats(rets, positions=pos, transactions=txn)
+        try:
+            fig = pyfolio.create_returns_tear_sheet(
+                rets, positions=pos, transactions=txn, return_fig=True)
+            fig.savefig(os.path.join(ts_dir, '%s.png' % fn[:-len('_oos.pkl')]),
+                        dpi=90, bbox_inches='tight')
+        except Exception as e:
+            print('  tear sheet for %s failed: %s' % (pair, e))
+    return stats
+
+
 def gate(row):
     """(passed, list of failure reasons)."""
     reasons = []
@@ -121,6 +167,18 @@ def main():
                     'as_of': date_str,
                 })
         add(pd.DataFrame(rows).to_string(index=False))
+        add('')
+
+    stats = tear_sheets(out_dir)
+    if stats:
+        add('## Risk statistics (pyfolio, out-of-sample)\n')
+        table = pd.DataFrame(stats)
+        add(table.round(3).to_string())
+        add('')
+        add('Tear sheets: `tearsheets/*.png`. Read Skew, Kurtosis and Tail ratio '
+            'against the round-trip count above --\nthose moments describe a '
+            'handful of events, not a distribution, when a pair traded a few '
+            'times.')
         add('')
 
     add('## Verdict\n')

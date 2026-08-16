@@ -12,9 +12,21 @@ data.py               bundle -> DataFrame helpers
 screen_pairs.py       correlation + cointegration + half-life screen (IS only)
 strategy.py           the parameterised pairs algorithm (backtest AND live)
 backtest.py           IS parameter grid, then one OOS test per pair
-report.py             verdict + promoted.json
+report.py             verdict + promoted.json + pyfolio tear sheets
+pyfolio_compat.py     one-line patch making pyfolio 0.9.2 work on pandas 1.x
 runs/YYYY-MM-DD/      one folder per pass
+  candidates.csv        pairs that passed the screen
+  grid_in_sample.csv    every config tried in-sample
+  out_of_sample.csv     one scored config per pair
+  perf/*.pkl            raw zipline perf frames from the OOS runs
+  tearsheets/*.png      pyfolio returns tear sheets
+  report.md             the verdict
+  promoted.json         configs cleared for live capital (often empty)
 ```
+
+`report.py` builds tear sheets from the saved perf frames rather than re-running
+anything, so the out-of-sample window is still only ever simulated once. If
+pyfolio is not installed the report still works and just skips that section.
 
 ## The one rule
 

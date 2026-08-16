@@ -199,14 +199,23 @@ def main():
         return
 
     print('\n=== OUT OF SAMPLE (one config per pair, scored once) ===')
+    perf_dir = os.path.join(out_dir, 'perf')
+    if not os.path.isdir(perf_dir):
+        os.makedirs(perf_dir)
+
     oos_rows = []
     for w in winners:
         try:
-            m, _ = run_one(w.sym_a, w.sym_b, int(w.lookback), w.entry_z,
-                           w.exit_z, oos_start, oos_end)
+            m, perf = run_one(w.sym_a, w.sym_b, int(w.lookback), w.entry_z,
+                              w.exit_z, oos_start, oos_end)
         except Exception as e:
             print('  %s/%s FAILED: %s' % (w.sym_a, w.sym_b, e))
             continue
+        # Keep the perf frame so report.py can build tear sheets without
+        # re-running the backtest -- and so the OOS run is scored exactly once,
+        # which is the whole discipline here.
+        perf.to_pickle(os.path.join(perf_dir, '%s_%s_oos.pkl'
+                                    % (w.sym_a, w.sym_b)))
         m['is_sharpe'] = w.sharpe
         m['is_total_return'] = w.total_return
         oos_rows.append(m)
