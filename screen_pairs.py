@@ -1,0 +1,180 @@
+"""Screen the research universe for tradeable pairs -- IN-SAMPLE ONLY.
+
+    python screen_pairs.py                 # screen, write runs/<date>/candidates.csv
+    python screen_pairs.py --all           # don't apply thresholds, dump every pair
+
+For each within-group pair (A, B) this measures, over the in-sample window:
+
+  corr        Pearson correlation of daily log returns. Co-movement is a
+              necessary condition; it is not sufficient and is not the signal.
+  coint_p     Engle-Granger two-step p-value. This is the statistical claim
+              that a linear combination of A and B is stationary, i.e. that the
+              spread has something to revert to.
+  beta        OLS hedge ratio of log(A) on log(B) over the in-sample window.
+
+              Everything here works in LOG prices, not levels. On levels the
+              hedge ratio absorbs the price-level difference between the two
+              names, so a $150 stock paired against a $40 one comes back with a
+              beta whose dollar hedge covers a fraction of the exposure -- the
+              "spread" is then mostly a directional bet on the expensive leg
+              wearing a pairs costume. In logs beta is an elasticity: 1.0 means
+              a 1% move in B goes with a 1% move in A, which is the thing a
+              dollar-neutral book actually trades.
+
+  half_life   OU half-life of the residual, from an AR(1) fit. Answers "how
+              many sessions until a shock decays by half" -- this is what
+              decides whether a spread is tradeable, not the p-value. Under ~2
+              sessions is microstructure noise you can't capture after costs;
+              over ~60 the position sits open through a whole quarter.
+  spread_vol  Std of the log residual, i.e. roughly its size in percent.
+
+Nothing here looks at the out-of-sample window. The whole reason the split
+exists is that cointegration tests run over the full history and then backtested
+over that same history will always look good.
+"""
+from __future__ import print_function
+
+import argparse
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.stattools import coint
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config  # noqa: E402
+import data as rdata  # noqa: E402
+
+
+def half_life(spread):
+    """OU half-life in sessions, from an AR(1) fit on the spread.
+
+    d(spread)_t = lambda * spread_{t-1} + eps  ->  hl = -ln(2) / ln(1 + lambda)
+    Returns np.inf when the fit says the spread is not mean reverting.
+    """
+    s = np.asarray(spread, dtype=float)
+    lag = s[:-1]
+    delta = np.diff(s)
+    lag_c = np.column_stack([lag, np.ones(len(lag))])
+    try:
+        lam = np.linalg.lstsq(lag_c, delta, rcond=None)[0][0]
+    except Exception:
+        return np.inf
+    if lam >= 0:
+        return np.inf
+    return float(-np.log(2) / lam)
+
+
+def pair_stats(px, a, b):
+    """All in-sample statistics for one pair, or None if the data is unusable."""
+    sub = px[[a, b]].dropna()
+    sub = sub[(sub > 0).all(axis=1)]
+    if len(sub) < 250:
+        return None
+
+    ya = np.log(sub[a].values.astype(float))
+    xb = np.log(sub[b].values.astype(float))
+    if ya.std() == 0 or xb.std() == 0:
+        return None
+
+    rets = np.log(sub).diff().dropna()
+    corr = float(rets[a].corr(rets[b]))
+
+    try:
+        _, pval, _ = coint(ya, xb)
+    except Exception:
+        return None
+
+    beta, intercept = np.polyfit(xb, ya, 1)
+    spread = ya - (beta * xb + intercept)
+    sd = spread.std()
+
+    return {
+        'sym_a': a,
+        'sym_b': b,
+        'n_sessions': len(sub),
+        'corr': corr,
+        'coint_p': float(pval),
+        'beta': float(beta),
+        'intercept': float(intercept),
+        'half_life': half_life(spread),
+        'spread_vol': float(sd),
+        'last_z': float(spread[-1] / sd) if sd else np.nan,
+    }
+
+
+def screen(px, keep_all=False):
+    rows = []
+    for a, b, group in rdata.candidate_pairs():
+        if a not in px.columns or b not in px.columns:
+            continue
+        st = pair_stats(px, a, b)
+        if st is None:
+            continue
+        st['group'] = group
+        st['passes'] = bool(
+            abs(st['corr']) >= config.MIN_ABS_CORR and
+            st['coint_p'] <= config.MAX_COINT_PVALUE and
+            config.MIN_HALF_LIFE <= st['half_life'] <= config.MAX_HALF_LIFE and
+            config.MIN_BETA <= st['beta'] <= config.MAX_BETA)
+        rows.append(st)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    if not keep_all:
+        df = df[df['passes']]
+    # Rank by half-life first: among pairs that already passed the
+    # cointegration gate, how *fast* the spread reverts is what decides whether
+    # the strategy gets enough round trips to matter. p-value breaks ties.
+    df = df.sort_values(['half_life', 'coint_p']).reset_index(drop=True)
+    return df
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--all', action='store_true',
+                    help='write every pair, not just those passing thresholds')
+    ap.add_argument('--date', default=None, help='run folder name (default: today)')
+    args = ap.parse_args()
+
+    start, end = config.session_range()
+    is_start, is_end, oos_start, oos_end = config.split_sessions(start, end)
+    print('in-sample     : %s -> %s' % (is_start.date(), is_end.date()))
+    print('out-of-sample : %s -> %s  (held out, not read here)'
+          % (oos_start.date(), oos_end.date()))
+
+    px = rdata.close_prices(is_start, is_end)
+    print('universe      : %d symbols, %d sessions' % (px.shape[1], px.shape[0]))
+
+    df = screen(px, keep_all=args.all)
+    if df.empty:
+        print('\nno pair passed the screen')
+        return df
+
+    out_dir = config.run_dir(args.date)
+    path = os.path.join(out_dir, 'candidates.csv')
+    df.to_csv(path, index=False)
+
+    n_tested = len(rdata.candidate_pairs())
+    print('\npairs tested   : %d' % n_tested)
+    print('expected false positives at p<=%.2f by chance alone: ~%.0f'
+          % (config.MAX_COINT_PVALUE, n_tested * config.MAX_COINT_PVALUE))
+    print('-> a pair passing this screen is a hypothesis, not a result. The '
+          'out-of-sample\n   window is what decides.')
+
+    top = df.head(config.TOP_N_PAIRS)
+    print('\n%d pairs passed; top %d carried into the backtest grid:\n'
+          % (len(df), len(top)))
+    cols = ['sym_a', 'sym_b', 'group', 'corr', 'coint_p', 'beta',
+            'half_life', 'last_z']
+    with pd.option_context('display.width', 140,
+                           'display.float_format', lambda v: '%8.3f' % v):
+        print(top[cols].to_string(index=False))
+    print('\nwritten: %s' % path)
+    return df
+
+
+if __name__ == '__main__':
+    main()
