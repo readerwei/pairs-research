@@ -87,17 +87,43 @@ def _apply_targets(context, data, new_target):
         context.n_orders += 1
 
 
-def _risk_controls():
+def _cost_models():
+    """Simulation-only. Live fills come from the broker, not a model."""
     set_commission(commission.PerShare(cost=COMMISSION_PER_SHARE,
                                        min_trade_cost=COMMISSION_MIN))
     set_slippage(slippage.VolumeShareSlippage())
-    set_max_leverage(MAX_LEVERAGE)
+
+
+# Per-process, deliberately NOT stored on `context`.
+#
+# The leverage cap has to be applied from before_trading_start, because
+# zipline-trader never calls initialize() in live trading -- a control set only
+# in initialize() protects the backtest and nothing else, which is backwards.
+# But before_trading_start runs every session, and `context` is restored from
+# the state file across restarts, so neither an unguarded call nor a
+# context-attribute guard is right: the first stacks a duplicate control every
+# session, the second silently skips the control entirely after a restart.
+#
+# A module global is per-process and is not persisted, which is exactly the
+# lifetime wanted. The factories reset it so that a parameter grid running many
+# backtests in one process still arms the control on every run.
+_leverage_applied = False
+
+
+def _ensure_leverage_cap():
+    global _leverage_applied
+    if not _leverage_applied:
+        set_max_leverage(MAX_LEVERAGE)
+        _leverage_applied = True
 
 
 # --------------------------------------------------------------------------
 # ch4_double_moving_average.py
 # --------------------------------------------------------------------------
 def make_double_ma_algo(symbols, short_window, long_window):
+    global _leverage_applied
+    _leverage_applied = False
+
     def _setup(context):
         _common_setup(context, symbols)
         context.short_window = short_window
@@ -105,10 +131,12 @@ def make_double_ma_algo(symbols, short_window, long_window):
 
     def initialize(context):
         _setup(context)
-        _risk_controls()
+        _cost_models()
+        _ensure_leverage_cap()
 
     def before_trading_start(context, data):
         _setup(context)          # live never calls initialize(); see CLAUDE.md
+        _ensure_leverage_cap()
 
     def handle_data(context, data):
         hist = data.history(context.syms, 'price', context.long_window, '1m')
@@ -137,6 +165,9 @@ def make_double_ma_algo(symbols, short_window, long_window):
 # ch4_naive_momentum_strategy2.py
 # --------------------------------------------------------------------------
 def make_naive_momentum_algo(symbols, nb_conseq):
+    global _leverage_applied
+    _leverage_applied = False
+
     def _setup(context):
         _common_setup(context, symbols)
         context.nb_conseq = nb_conseq
@@ -146,10 +177,12 @@ def make_naive_momentum_algo(symbols, nb_conseq):
 
     def initialize(context):
         _setup(context)
-        _risk_controls()
+        _cost_models()
+        _ensure_leverage_cap()
 
     def before_trading_start(context, data):
         _setup(context)
+        _ensure_leverage_cap()
 
     def handle_data(context, data):
         prices = data.current(context.syms, 'price')
