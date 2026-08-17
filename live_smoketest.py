@@ -50,9 +50,10 @@ from live_momentum import preflight  # noqa: E402
 from zipline.api import order_target, record, symbol  # noqa: E402
 
 
-def make_pingpong_algo(symbols, period, shares, api, verify_every):
+def make_pingpong_algo(symbols, period, shares, api, verify_every,
+                       price_check=True):
     """Flip every symbol between `shares` and flat every `period` bars."""
-    state = {'bar': 0}
+    state = {'bar': 0, 'pending': {}}
 
     def _setup(context):
         if getattr(context, '_ready', False):
@@ -91,9 +92,39 @@ def make_pingpong_algo(symbols, period, shares, api, verify_every):
             print('   %-6s zipline %+4d   broker %+4d   %s'
                   % (k, z, b, 'ok' if z == b else '*** MISMATCH ***'))
 
+    def _report_fills():
+        """What the previous cycle's orders actually filled at.
+
+        Run a bar late on purpose: at submission time a market order has no
+        fill price yet, so the only way to compare intent against execution is
+        to come back for it.
+        """
+        if not state['pending']:
+            return
+        recent = {}
+        for o in api.list_orders(status='all', limit=40):
+            if o.symbol in state['pending'] and o.symbol not in recent:
+                recent[o.symbol] = o
+        for sym, (side, zp_px, mkt_px) in sorted(state['pending'].items()):
+            o = recent.get(sym)
+            if o is None or not o.filled_avg_price:
+                print('   %-5s %-4s no fill reported yet' % (sym, side))
+                continue
+            fill = float(o.filled_avg_price)
+            print('   %-5s %-4s zipline %9.4f  market %9.4f  filled %9.4f  '
+                  'slip vs zipline %+7.4f (%+.3f%%)'
+                  % (sym, side, zp_px, mkt_px, fill, fill - zp_px,
+                     100.0 * (fill - zp_px) / zp_px if zp_px else float('nan')))
+        state['pending'] = {}
+
     def handle_data(context, data):
         state['bar'] += 1
         now = pd.Timestamp.now(tz='America/New_York').strftime('%H:%M:%S')
+
+        if price_check and state['pending']:
+            print('[%s] fills from the previous cycle:' % now)
+            _report_fills()
+            sys.stdout.flush()
 
         if state['bar'] % period == 0:
             context.holding = not context.holding
@@ -102,12 +133,25 @@ def make_pingpong_algo(symbols, period, shares, api, verify_every):
             for asset in context.syms:
                 if not data.can_trade(asset):
                     continue
+                side = 'buy' if target > 0 else 'sell'
+                zp_px = mkt_px = float('nan')
+                if price_check:
+                    # what the algorithm thinks the price is, at the instant it
+                    # decides -- this is the number the strategy acts on
+                    zp_px = float(data.current(asset, 'price'))
+                    try:
+                        mkt_px = float(
+                            api.get_latest_trade(asset.symbol).price)
+                    except Exception:
+                        pass
+                    state['pending'][asset.symbol] = (side, zp_px, mkt_px)
                 order_target(asset, target)
                 context.n_orders += 1
-                placed.append(asset.symbol)
-            print('[%s] bar %-4d -> target %d share(s): %s  (orders so far %d)'
-                  % (now, state['bar'], target, ', '.join(placed) or 'none',
-                     context.n_orders))
+                placed.append('%s %s@%.4f/%.4f'
+                              % (asset.symbol, side, zp_px, mkt_px)
+                              if price_check else asset.symbol)
+            print('[%s] bar %-4d -> %d share(s)  [symbol side@zipline/market]  '
+                  '%s' % (now, state['bar'], target, '  '.join(placed) or 'none'))
             sys.stdout.flush()
 
         if verify_every and state['bar'] % verify_every == 0:
@@ -158,6 +202,8 @@ def main():
     ap.add_argument('--shares', type=int, default=1)
     ap.add_argument('--max-notional', type=float, default=5000.0,
                     help='refuse to start if the basket would cost more')
+    ap.add_argument('--no-price-check', action='store_true',
+                    help='skip the zipline-vs-market-vs-fill price comparison')
     ap.add_argument('--verify-every', type=int, default=4,
                     help='bars between zipline-vs-broker reconciliations; 0 off')
     ap.add_argument('--max-seconds', type=float, default=600)
@@ -209,7 +255,8 @@ def main():
     deadline = time.time() + args.max_seconds
 
     init, handle, bts = make_pingpong_algo(resolved, args.period, args.shares,
-                                           api, args.verify_every)
+                                           api, args.verify_every,
+                                           price_check=not args.no_price_check)
 
     print('\nrunning for %.0fs\n' % args.max_seconds)
     perf = run_algorithm(
