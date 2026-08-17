@@ -3,3 +3,4 @@ __pycache__/
 *.pkl
 *.state
 live_momentum_*.state
+live_bars/

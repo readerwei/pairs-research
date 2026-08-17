@@ -30,6 +30,19 @@ Safety
 * The leverage cap is armed from before_trading_start, so it is active live --
   see the note in momentum.py about initialize() never being called.
 
+This is zipline-trader's own live machinery, not a reimplementation of it
+-------------------------------------------------------------------------
+Passing `broker=` to run_algorithm is the documented way in; run_algo.py then
+swaps `TradingAlgorithm` for `LiveTradingAlgorithm` and `DataPortal` for
+`DataPortalLive`, and forces the emission rate to minute. Verified by
+instrumenting a live run: LiveTradingAlgorithm / DataPortalLive / ALPACABroker.
+
+The `zipline run --broker alpaca --state-file ...` CLI reaches the same code, and
+is the right entry point for a fixed algorithm in a file. It is not usable here
+because the strategy is parameterised -- symbols, N, gross -- and the CLI has no
+way to pass arguments through to the algorithm. Hence run_algorithm directly,
+which also leaves room for the paper-endpoint refusal and the pre-flight.
+
 State
 -----
 Position and counter state persists to --state-file. The consecutive-bar counter
@@ -127,6 +140,10 @@ def main():
     ap.add_argument('--state-file', default=None)
     ap.add_argument('--max-seconds', type=float, default=None,
                     help='stop cleanly after N seconds (smoke test)')
+    ap.add_argument('--realtime-bar-target', default='./live_bars',
+                    help='directory where live minute bars are written; these '
+                         'are what let you reconcile the live feed against the '
+                         'bundle afterwards. Pass "" to disable.')
     ap.add_argument('--check', action='store_true',
                     help='pre-flight only; place nothing, arm nothing')
     ap.add_argument('--allow-real-money', action='store_true')
@@ -143,6 +160,10 @@ def main():
                                      % '_'.join(s.replace('.', '') for s in resolved))
     print('state file   : %s%s'
           % (state_file, '' if os.path.exists(state_file) else '  (new)'))
+    bar_target = args.realtime_bar_target or None
+    if bar_target and not os.path.isdir(bar_target):
+        os.makedirs(bar_target)
+    print('live bars    : %s' % (bar_target or 'not recorded'))
 
     if args.check:
         print('\n--check: pre-flight only, nothing armed.')
@@ -181,6 +202,7 @@ def main():
         data_frequency='minute',
         broker=broker,
         state_filename=state_file,
+        realtime_bar_target=bar_target,
         stop_execution_callback=stop_execution_callback,
     )
 
