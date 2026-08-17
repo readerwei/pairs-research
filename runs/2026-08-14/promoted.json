@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "sym_a": "AMZN",
+    "sym_b": "META",
+    "lookback": 30,
+    "entry_z": 2.0,
+    "exit_z": 0.5,
+    "oos_sharpe": 0.8614863912117472,
+    "as_of": "2026-08-14"
+  }
+]

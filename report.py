@@ -76,6 +76,9 @@ def tear_sheets(out_dir):
         try:
             fig = pyfolio.create_returns_tear_sheet(
                 rets, positions=pos, transactions=txn, return_fig=True)
+            # Without this every time-series panel renders blank; see
+            # pyfolio_compat.fix_date_axes.
+            pyfolio_compat.fix_date_axes(fig)
             fig.savefig(os.path.join(ts_dir, '%s.png' % fn[:-len('_oos.pkl')]),
                         dpi=90, bbox_inches='tight')
         except Exception as e:

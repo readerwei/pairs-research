@@ -1,8 +1,14 @@
-# Pairs research
+# Trading research
 
-A daily loop for finding pairs-trading strategies that survive contact with data
-they were not fitted on. Everything here is research: nothing in this folder
-places an order.
+Two tracks, one discipline: parameter search on in-sample data only, one config
+carried to the holdout, holdout scored once. Everything here is research —
+nothing in this folder places an order.
+
+- **Pairs** (daily bars) — cointegration screen → grid → out-of-sample gate
+- **Momentum** (1-minute bars) — the Learn-Algorithmic-Trading Chapter 4
+  strategies over the live yaml universe. See [Momentum track](#momentum-track).
+
+## Pairs track
 
 ```
 run_daily.sh          ingest -> screen -> backtest -> report
@@ -130,6 +136,53 @@ Nothing promoted. Three of four decayed to nothing or worse out of sample —
 which is the expected result and the reason the split exists. AMZN/GOOG is the
 only one that held up, and it traded 3 times in 15 months; that Sharpe is not
 distinguishable from luck yet. It is the pair to keep watching, not to fund.
+
+## Momentum track
+
+```
+ingest_minute.py       builds the `momentum_1m` bundle (1-minute bars)
+momentum.py            the two Chapter 4 strategies as zipline algorithms
+backtest_momentum.py   IS grid -> one OOS run per strategy
+report_momentum.py     results table, pyfolio stats, tear sheets
+runs/<date>-momentum/  output, same layout as the pairs runs
+```
+
+Ported from
+[Learn-Algorithmic-Trading Chapter 4](https://github.com/PacktPublishing/Learn-Algorithmic-Trading/tree/master/Chapter4):
+
+- **Double moving average** — long while SMA(short) > SMA(long), flat otherwise.
+  The book's `orders = signal.diff()` is why this trades only on *transitions*;
+  that detail matters far more on minute bars than on the daily bars it was
+  written for.
+- **Naive momentum** — a counter of consecutive up/down closes that fires when it
+  hits exactly N and resets on a direction change. Implemented with a per-symbol
+  counter rather than a rolling "last N diffs were positive" window, because
+  those are different rules: the window version fires on every bar of a long run
+  and would trade several times more often than the book does.
+
+Both are single-asset strategies in the book. Here each of the 33 names gets a
+fixed slice of `MAX_GROSS` and is independently long or flat — the book's
+strategy run 33 times in parallel. Equal-weighting across whatever is currently
+active would resize every open position whenever any one name flips, and on
+minute bars that manufactured turnover would swamp the signal.
+
+**Two things about minute bars that don't apply to the daily track.** Costs
+dominate, so the report prints transactions per session and total commission as a
+share of capital next to returns — a strategy that wins before costs and loses
+after is the normal outcome here, and it should be visible rather than buried in
+a Sharpe. And the existing `alpaca_api_1m` bundle can't be used: it holds nine
+sessions, and it was ingested minute-only, so its daily reader has a NaT
+`first_trading_day` and every `run_algorithm` against it dies with
+`KeyError: 'NaT'` before the first bar. `ingest_minute.py` writes both intervals.
+
+Alpaca minute history starts 2016-01-01, so the window is a choice, not a limit.
+
+```bash
+python ingest_minute.py --months 12
+python backtest_momentum.py --measure     # time it before committing to a grid
+python backtest_momentum.py
+python report_momentum.py
+```
 
 Also worth noting: the correlation gate started at 0.70 and **nothing** in the
 universe passed both it and cointegration — the highly-correlated pairs are not
