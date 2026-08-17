@@ -69,7 +69,7 @@ import momentum  # noqa: E402
 PAPER_HOST = 'paper-api.alpaca.markets'
 
 
-def preflight(symbols, allow_real_money):
+def preflight(symbols, allow_real_money, show_sizing=True):
     """Everything checkable before a single order can be sent."""
     base_url = config.load_alpaca_env()
     is_paper = PAPER_HOST in base_url
@@ -122,11 +122,12 @@ def preflight(symbols, allow_real_money):
         raise SystemExit('not in the %s bundle: %s'
                          % (minute_bundle.BUNDLE, ', '.join(missing)))
 
-    weight = momentum.MAX_GROSS / float(len(resolved))
-    print('sizing       : %.1f%% of equity per name when long, %.1f%% gross if '
-          'all %d are long' % (weight * 100, momentum.MAX_GROSS * 100,
-                               len(resolved)))
-    print('leverage cap : %.2f' % momentum.MAX_LEVERAGE)
+    if show_sizing:
+        weight = momentum.MAX_GROSS / float(len(resolved))
+        print('sizing       : %.1f%% of equity per name when long, %.1f%% gross '
+              'if all %d are long' % (weight * 100, momentum.MAX_GROSS * 100,
+                                      len(resolved)))
+        print('leverage cap : %.2f' % momentum.MAX_LEVERAGE)
     return api, clock, resolved
 
 
