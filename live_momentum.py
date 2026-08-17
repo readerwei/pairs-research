@@ -130,6 +130,34 @@ def preflight(symbols, allow_real_money):
     return api, clock, resolved
 
 
+def _with_heartbeat(handle_data, every, nb_conseq):
+    """Wrap handle_data so a running loop reports what it is thinking.
+
+    Prints the consecutive-bar counter per symbol, how close each is to firing,
+    and current exposure. Without this the only evidence a live run is alive is
+    the state file's mtime.
+    """
+    state = {'n': 0}
+
+    def wrapped(context, data):
+        handle_data(context, data)
+        state['n'] += 1
+        if state['n'] % every:
+            return
+        cons = ' '.join('%s%+d' % (a.symbol, context.cons.get(a, 0))
+                        for a in context.syms)
+        held = [a.symbol for a in context.syms if context.target.get(a)]
+        print('[%s] bar %-5d %s  (fires at %s%d)  long=%s  gross=%.2f  '
+              'orders=%d blocked=%d'
+              % (pd.Timestamp.now(tz='America/New_York').strftime('%H:%M:%S'),
+                 state['n'], cons, chr(177), nb_conseq,
+                 ','.join(held) or 'none', context.account.leverage,
+                 context.n_orders, context.n_blocked))
+        sys.stdout.flush()
+
+    return wrapped
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--symbols', nargs='+', default=['AMD', 'GOOG', 'UNH'])
@@ -144,6 +172,11 @@ def main():
                     help='directory where live minute bars are written; these '
                          'are what let you reconcile the live feed against the '
                          'bundle afterwards. Pass "" to disable.')
+    ap.add_argument('--quiet', action='store_true',
+                    help='no per-bar heartbeat (the loop is silent by default '
+                         'in zipline-trader, which reads as a hang)')
+    ap.add_argument('--heartbeat', type=int, default=5,
+                    help='print a status line every N minute bars')
     ap.add_argument('--check', action='store_true',
                     help='pre-flight only; place nothing, arm nothing')
     ap.add_argument('--allow-real-money', action='store_true')
@@ -188,6 +221,16 @@ def main():
         return False
 
     init, handle, bts = momentum.make_naive_momentum_algo(resolved, args.n)
+
+    # zipline-trader logs through logbook, and logbook drops every record unless
+    # a handler is pushed. Out of the box the live loop therefore prints nothing
+    # after "starting live loop" -- it is running, it just says so nowhere. Push
+    # a handler, and add our own heartbeat so a working run is visibly working.
+    from logbook import StderrHandler, INFO
+    StderrHandler(level=INFO).push_application()
+
+    if not args.quiet:
+        handle = _with_heartbeat(handle, args.heartbeat, args.n)
 
     start = pd.Timestamp.utcnow().normalize() - pd.Timedelta(days=5)
     end = pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=1)

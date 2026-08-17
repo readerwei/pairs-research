@@ -59,6 +59,15 @@ MAX_LEVERAGE = 1.15
 
 
 def _common_setup(context, symbols):
+    # Defaults first, and defensively, because `context` is restored from the
+    # live state file: anything guarded by `_ready` below is skipped entirely on
+    # a restart. A counter added after a state file was written stays absent,
+    # and the first `context.n_blocked += 1` then kills the live run with a
+    # TypeError on None. Cheap idempotent defaults belong outside the guard.
+    for name, default in (('n_orders', 0), ('n_blocked', 0)):
+        if getattr(context, name, None) is None:
+            setattr(context, name, default)
+
     if getattr(context, '_ready', False):
         return
     context.syms = []
@@ -71,8 +80,6 @@ def _common_setup(context, symbols):
     # equal-weight-across-active.
     context.weight = MAX_GROSS / float(len(context.syms))
     context.target = {a: 0.0 for a in context.syms}
-    context.n_orders = 0
-    context.n_blocked = 0
     context._ready = True
 
 
