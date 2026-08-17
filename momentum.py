@@ -101,7 +101,10 @@ def _apply_targets(context, data, new_target):
             continue
         if not data.can_trade(asset):
             continue
-        increasing = tgt > context.target[asset]
+        # abs(): going from 0 to -1 is numerically smaller but is an increase
+        # in exposure. A naive `tgt > current` would wave every short through
+        # the leverage check.
+        increasing = abs(tgt) > abs(context.target[asset])
         if increasing and context.account.leverage >= MAX_LEVERAGE:
             context.n_blocked += 1
             continue
@@ -176,7 +179,15 @@ def make_double_ma_algo(symbols, short_window, long_window):
 # --------------------------------------------------------------------------
 # ch4_naive_momentum_strategy2.py
 # --------------------------------------------------------------------------
-def make_naive_momentum_algo(symbols, nb_conseq):
+def make_naive_momentum_algo(symbols, nb_conseq, short=False):
+    """`short=True` sells the down signal instead of merely exiting.
+
+    The book is long-only: -N closes the position and stops there, so the book's
+    strategy is flat about half the time and never holds negative exposure. The
+    symmetric variant treats -N as the mirror of +N and is always in the market.
+    That is a genuinely different strategy, not a setting -- it doubles time in
+    market, and it is short exactly when everyone else is selling.
+    """
     def _setup(context):
         _common_setup(context, symbols)
         context.nb_conseq = nb_conseq
@@ -220,7 +231,7 @@ def make_naive_momentum_algo(symbols, nb_conseq):
             if context.cons[asset] == context.nb_conseq:
                 new_target[asset] = 1.0
             elif context.cons[asset] == -context.nb_conseq:
-                new_target[asset] = 0.0
+                new_target[asset] = -1.0 if short else 0.0
 
         _apply_targets(context, data, new_target)
         record(n_long=sum(new_target.values()),
@@ -229,7 +240,12 @@ def make_naive_momentum_algo(symbols, nb_conseq):
     return initialize, handle_data, before_trading_start
 
 
+def make_naive_momentum_ls_algo(symbols, nb_conseq):
+    return make_naive_momentum_algo(symbols, nb_conseq, short=True)
+
+
 STRATEGIES = {
     'double_ma': make_double_ma_algo,
     'naive_momentum': make_naive_momentum_algo,
+    'naive_momentum_ls': make_naive_momentum_ls_algo,
 }
