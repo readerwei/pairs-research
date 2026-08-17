@@ -103,8 +103,13 @@ print(int(max(0, (cal.session_close(today) - now).total_seconds())))
 
     attempt=$((attempt + 1))
     echo "$(date '+%F %T')  attempt $attempt, running for ${remaining}s"
-    python live_momentum.py --symbols $SYMBOLS --n "$N" \
-        --max-seconds "$remaining" --heartbeat 15
+    # timeout is a backstop, not the mechanism: live_momentum's own watchdog
+    # polls twice a second and stops within ~5s of --max-seconds even when no
+    # bars are flowing. The extra 120s only covers the case where that watchdog
+    # itself fails, so a stuck process cannot run past the close into tomorrow.
+    timeout -s INT $((remaining + 120)) \
+        python live_momentum.py --symbols $SYMBOLS --n "$N" \
+            --max-seconds "$remaining" --heartbeat 15
     rc=$?
     echo "$(date '+%F %T')  live_momentum exited rc=$rc"
 
