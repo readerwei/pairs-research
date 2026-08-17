@@ -5,3 +5,4 @@ __pycache__/
 live_momentum_*.state
 live_bars/
 live_smoketest.state
+logs/
