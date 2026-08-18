@@ -52,8 +52,15 @@ import config  # noqa: E402
 
 # Costs are the whole ballgame at minute frequency, so they are explicit here
 # rather than inherited.
-COMMISSION_PER_SHARE = 0.005
-COMMISSION_MIN = 1.0
+#
+# The original PerShare($0.005, $1 min) was an interactive-broker schedule and
+# simply wrong for this account: Alpaca charges no commission on US equities.
+# What is actually paid is the spread, plus SEC and FINRA fees on sells. See
+# costs.py, where the spreads are measured from Alpaca's own SIP feed rather
+# than assumed. Set REALISTIC_COSTS = False to reproduce the old numbers.
+REALISTIC_COSTS = os.environ.get('REALISTIC_COSTS', '1') != '0'
+COMMISSION_PER_SHARE = 0.005     # legacy model only
+COMMISSION_MIN = 1.0             # legacy model only
 MAX_GROSS = 0.95
 MAX_LEVERAGE = 1.15
 
@@ -124,6 +131,10 @@ def _apply_targets(context, data, new_target):
 
 def _cost_models():
     """Simulation-only. Live fills come from the broker, not a model."""
+    if REALISTIC_COSTS:
+        import costs
+        costs.apply()
+        return
     set_commission(commission.PerShare(cost=COMMISSION_PER_SHARE,
                                        min_trade_cost=COMMISSION_MIN))
     set_slippage(slippage.VolumeShareSlippage())
