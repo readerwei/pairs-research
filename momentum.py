@@ -43,8 +43,8 @@ import sys
 
 import numpy as np
 
-from zipline.api import (order_target_percent, record, set_commission,
-                         set_max_leverage, set_slippage, symbol)
+from zipline.api import (get_open_orders, order_target_percent, record,
+                         set_commission, set_max_leverage, set_slippage, symbol)
 from zipline.finance import commission, slippage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -100,6 +100,15 @@ def _apply_targets(context, data, new_target):
         if tgt == context.target[asset]:
             continue
         if not data.can_trade(asset):
+            continue
+        if get_open_orders(asset):
+            # order_target_percent sizes off the CURRENT position and ignores
+            # orders already working, so a target that flips while a fill is
+            # pending queues a second order for the full size. Both then fill
+            # together and the position is double the target -- seen on QQQ,
+            # where two +83 share orders placed 46 minutes apart both filled at
+            # the next open and took gross to 2x the cap.
+            context.n_blocked += 1
             continue
         # abs(): going from 0 to -1 is numerically smaller but is an increase
         # in exposure. A naive `tgt > current` would wave every short through

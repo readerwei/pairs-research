@@ -37,7 +37,10 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
-BUNDLE = 'alpaca_api'
+# Defaults to the production bundle the nightly cron maintains. Override with
+# MINUTE_BUNDLE to test a symbol it does not carry -- QQQ, for instance, is not
+# in the yaml universe -- without widening the bundle the live pipeline reads.
+BUNDLE = os.environ.get('MINUTE_BUNDLE', 'alpaca_api')
 
 # The live trading universe as the yaml lists it, minus TCEHY: it is an OTC ADR
 # and Alpaca serves no bars for it, so it never makes it into any bundle.
@@ -57,9 +60,9 @@ def register_readonly():
 
     def _noop(*a, **k):
         raise RuntimeError(
-            '%s is produced by the nightly cron job '
-            '(/home/wei/dailyexec/daily_ingest.sh); research does not ingest it'
-            % BUNDLE)
+            '%s is not ingested here. alpaca_api comes from the nightly cron '
+            '(/home/wei/dailyexec/daily_ingest.sh); anything else comes from '
+            'ingest_minute.py' % BUNDLE)
 
     bundles_module.register(BUNDLE, _noop, calendar_name='NYSE',
                             minutes_per_day=390)
