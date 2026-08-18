@@ -47,8 +47,41 @@ def summarize(symbols, date_str=None, strategy='naive_momentum'):
     lines = []
     add = lines.append
 
+    # Did it run at all? This is the first question, because a cron job that
+    # silently does nothing looks exactly like a strategy that found no signal:
+    # both produce zero orders and an unchanged account. That failure went
+    # unnoticed for a full session once already, when a renamed entry point left
+    # the crontab pointing at a file that no longer existed.
+    log = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs',
+                       '%s_%s.log' % (strategy, day.date()))
+    sfile = state_path(symbols, strategy)
+    # The log EXISTING is not evidence: the wrapper writes one even when it
+    # decides today is not a session and exits. What proves the algorithm
+    # actually launched is the supervisor recording an attempt.
+    launched = False
+    if os.path.exists(log):
+        try:
+            with open(log) as f:
+                launched = 'attempt ' in f.read()
+        except IOError:
+            pass
+    fresh_state = (os.path.exists(sfile) and
+                   pd.Timestamp.fromtimestamp(os.path.getmtime(sfile)).date()
+                   == day.date())
+    ran_log = launched
+
     acct = api.get_account()
     add('=== %s  %s: %s ===' % (day.date(), strategy, '/'.join(symbols)))
+    if ran_log or fresh_state:
+        add('STATUS       : ran   (algorithm launched %s, state written today '
+            '%s)' % ('yes' if launched else 'no',
+                     'yes' if fresh_state else 'no'))
+    else:
+        add('STATUS       : *** DID NOT RUN TODAY ***')
+        add('               %s shows no launch attempt and the state file was'
+            % (os.path.basename(log) if os.path.exists(log) else 'no log'))
+        add('               not written today. Check cron, and that the entry')
+        add('               point it names still exists.')
     add('equity        $%s   cash $%s' % (acct.equity, acct.cash))
     add('last equity   $%s   -> whole-account day P&L $%.2f'
         % (acct.last_equity, float(acct.equity) - float(acct.last_equity)))
@@ -63,6 +96,8 @@ def summarize(symbols, date_str=None, strategy='naive_momentum'):
     add('')
     add('orders        %d submitted, %d filled, %d other'
         % (len(orders), len(filled), len(orders) - len(filled)))
+    add('               (every order on these symbols, whichever program placed')
+    add('                it -- Alpaca does not tag them by strategy)')
     if filled:
         add('')
         add('  %-9s %-5s %-4s %-5s %-10s' % ('time', 'sym', 'side', 'qty',
