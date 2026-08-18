@@ -29,12 +29,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
 
-def state_path(symbols):
-    return './live_momentum_%s.state' % '_'.join(s.replace('.', '')
-                                                 for s in symbols)
+def state_path(symbols, strategy='naive_momentum'):
+    # matches live_runner.state_file()
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'state_%s_%s.pkl'
+                        % (strategy, '_'.join(s.replace('.', '')
+                                              for s in symbols)))
 
 
-def summarize(symbols, date_str=None):
+def summarize(symbols, date_str=None, strategy='naive_momentum'):
     config.load_alpaca_env()
     import alpaca_trade_api as tradeapi
     api = tradeapi.REST()
@@ -45,7 +48,7 @@ def summarize(symbols, date_str=None):
     add = lines.append
 
     acct = api.get_account()
-    add('=== %s  live momentum: %s ===' % (day.date(), '/'.join(symbols)))
+    add('=== %s  %s: %s ===' % (day.date(), strategy, '/'.join(symbols)))
     add('equity        $%s   cash $%s' % (acct.equity, acct.cash))
     add('last equity   $%s   -> whole-account day P&L $%.2f'
         % (acct.last_equity, float(acct.equity) - float(acct.last_equity)))
@@ -82,7 +85,7 @@ def summarize(symbols, date_str=None):
         add('holding overnight: flat')
 
     # engine vs broker
-    path = state_path(symbols)
+    path = state_path(symbols, strategy)
     add('')
     if not os.path.exists(path):
         add('state file    %s missing -- the algorithm starts cold tomorrow'
@@ -125,11 +128,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--symbols', nargs='+', default=['AMD', 'GOOG', 'UNH'])
     ap.add_argument('--date', default=None)
+    ap.add_argument('--strategy', default='naive_momentum')
     ap.add_argument('--email', action='store_true',
                     help='send via the SMTP settings in the yaml')
     args = ap.parse_args()
 
-    text = summarize([s.upper() for s in args.symbols], args.date)
+    text = summarize([s.upper() for s in args.symbols], args.date,
+                     args.strategy)
     print(text)
 
     if args.email:
@@ -139,7 +144,7 @@ def main():
         from email.mime.text import MIMEText
         cfg = email_settings()
         msg = MIMEText('<pre>%s</pre>' % text, 'html')
-        msg['SUBJECT'] = 'live momentum EOD %s' % pd.Timestamp.now().date()
+        msg['SUBJECT'] = '%s EOD %s' % (args.strategy, pd.Timestamp.now().date())
         s = smtplib.SMTP_SSL(cfg['host'], cfg['port'])
         s.ehlo()
         s.login(cfg['user'], cfg['password'])

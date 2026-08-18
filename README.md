@@ -140,49 +140,74 @@ distinguishable from luck yet. It is the pair to keep watching, not to fund.
 ## Momentum track
 
 ```
-ingest_minute.py       builds the `momentum_1m` bundle (1-minute bars)
+minute_bundle.py       read-only handle on the alpaca_api minute bars
 momentum.py            the two Chapter 4 strategies as zipline algorithms
 backtest_momentum.py   IS grid -> one OOS run per strategy
+symbol_study.py        walk-forward symbol selection, with a drop-the-winner check
+basket.py              score a hand-picked basket, with leave-one-out
 report_momentum.py     results table, pyfolio stats, tear sheets
-runs/<date>-momentum/  output, same layout as the pairs runs
 ```
 
 Ported from
 [Learn-Algorithmic-Trading Chapter 4](https://github.com/PacktPublishing/Learn-Algorithmic-Trading/tree/master/Chapter4):
+a double moving average crossover and a consecutive-bar counter. Both are
+single-asset signal generators in the book; here each name gets a fixed slice of
+gross and runs independently.
 
-- **Double moving average** — long while SMA(short) > SMA(long), flat otherwise.
-  The book's `orders = signal.diff()` is why this trades only on *transitions*;
-  that detail matters far more on minute bars than on the daily bars it was
-  written for.
-- **Naive momentum** — a counter of consecutive up/down closes that fires when it
-  hits exactly N and resets on a direction change. Implemented with a per-symbol
-  counter rather than a rolling "last N diffs were positive" window, because
-  those are different rules: the window version fires on every bar of a long run
-  and would trade several times more often than the book does.
+**Costs dominate at this frequency.** Naive momentum at the book's N=5 fires 174
+times a session; at N=3 it paid $101,504 of commission on a $100,000 account.
+The reports print transactions per session and commission as a share of capital
+next to returns, because a strategy that wins before costs and loses after is
+the normal outcome here.
 
-Both are single-asset strategies in the book. Here each of the 33 names gets a
-fixed slice of `MAX_GROSS` and is independently long or flat — the book's
-strategy run 33 times in parallel. Equal-weighting across whatever is currently
-active would resize every open position whenever any one name flips, and on
-minute bars that manufactured turnover would swamp the signal.
+**Pin the window.** `alpaca_api` is re-ingested every weeknight, so results move
+under you: one extra session shifted an out-of-sample result from +4.41% to
++4.09% with no code change. Use `--start`/`--end`, and read `run_meta.json` in
+each run folder for the command that reproduces it.
 
-**Two things about minute bars that don't apply to the daily track.** Costs
-dominate, so the report prints transactions per session and total commission as a
-share of capital next to returns — a strategy that wins before costs and loses
-after is the normal outcome here, and it should be visible rather than buried in
-a Sharpe. And the existing `alpaca_api_1m` bundle can't be used: it holds nine
-sessions, and it was ingested minute-only, so its daily reader has a NaT
-`first_trading_day` and every `run_algorithm` against it dies with
-`KeyError: 'NaT'` before the first bar. `ingest_minute.py` writes both intervals.
+## Live execution
 
-Alpaca minute history starts 2016-01-01, so the window is a choice, not a limit.
+```
+live_runner.py         the engine -- every strategy runs through this
+live_strategies.py     registry: signal logic only
+run_live.sh            15-line cron launcher, no logic
+eod_summary.py         end-of-day orders, holdings, engine-vs-broker check
+```
 
 ```bash
-python ingest_minute.py --months 12
-python backtest_momentum.py --measure     # time it before committing to a grid
-python backtest_momentum.py
-python report_momentum.py
+python live_runner.py --list
+python live_runner.py --strategy naive_momentum --check
+python live_runner.py --strategy pingpong --once --max-seconds 300
+python live_runner.py --strategy naive_momentum --session
 ```
+
+Strategies contribute three things: `build()`, a `status()` line for the
+heartbeat, and defaults. Everything that can lose money by being wrong lives in
+the runner and is identical for all of them:
+
+- refuses any endpoint that is not Alpaca paper without `--allow-real-money`
+- refuses to start if another runner is trading an overlapping symbol -- two
+  live algorithms on one position do not race and settle, they undo each other
+- pre-flight: account, clock, positions, open orders, symbol resolution, sizing
+- watchdog, heartbeat, quoted-vs-fill price reporting, engine-vs-broker
+  reconciliation, flatten-on-exit policy
+
+`--session` supervises `--once` children in a subprocess so a crash in the
+engine cannot take down the supervisor meant to notice it, and a hard timeout
+can bound a hang the watchdog missed.
+
+Session logic is in Python, not bash: the calendar decides whether today is a
+session and when it ends, which is what makes half-days work (the day after
+Thanksgiving closes at 13:00, and a hardcoded 16:00 would leave a live
+algorithm running into three hours of closed market).
+
+```
+ZIPLINE_TRADER_CONFIG=/home/wei/Documents/zipline-yaml/zipline-trader.yaml
+25 8 * * 1-5 /home/wei/Documents/zipline/research/run_live.sh --strategy naive_momentum
+```
+
+Adding a strategy is one class in `live_strategies.py` -- `build()`, `status()`,
+defaults -- and it inherits every guard above.
 
 Also worth noting: the correlation gate started at 0.70 and **nothing** in the
 universe passed both it and cointegration — the highly-correlated pairs are not
