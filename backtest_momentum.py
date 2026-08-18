@@ -143,17 +143,41 @@ def main():
     ap.add_argument('--one', choices=sorted(momentum.STRATEGIES))
     ap.add_argument('--params', nargs='+', type=int)
     ap.add_argument('--oos', action='store_true')
+    ap.add_argument('--start', default=None,
+                    help='pin the first session (YYYY-MM-DD) instead of taking '
+                         'whatever the bundle currently holds')
+    ap.add_argument('--end', default=None, help='pin the last session')
     args = ap.parse_args()
 
     cal = config.nyse()
     data, sess = sessions(cal)
+    # The production bundle is re-ingested every weeknight, so 'whatever the
+    # bundle holds' moves under you: a result computed today does not reproduce
+    # tomorrow, and a comparison across days silently mixes a code change with a
+    # data change. Pinning the range is the difference between a backtest and an
+    # anecdote.
+    if args.start or args.end:
+        lo = pd.Timestamp(args.start, tz='utc') if args.start else sess[0]
+        hi = pd.Timestamp(args.end, tz='utc') if args.end else sess[-1]
+        sess = cal.sessions_in_range(lo, hi)
     is_start, is_end, oos_start, oos_end = split(sess)
-    print('bundle sessions : %d  (%s -> %s)'
-          % (len(sess), sess[0].date(), sess[-1].date()))
+    print('bundle sessions : %d  (%s -> %s)%s'
+          % (len(sess), sess[0].date(), sess[-1].date(),
+             '  [pinned]' if (args.start or args.end) else ''))
     print('in-sample       : %s -> %s' % (is_start.date(), is_end.date()))
     print('out-of-sample   : %s -> %s' % (oos_start.date(), oos_end.date()))
 
     out_dir = config.run_dir(str(sess[-1].date()) + '-momentum')
+    import json
+    with open(os.path.join(out_dir, 'run_meta.json'), 'w') as f:
+        json.dump({'bundle': minute_bundle.BUNDLE,
+                   'sessions': len(sess),
+                   'first_session': str(sess[0].date()),
+                   'last_session': str(sess[-1].date()),
+                   'is': [str(is_start.date()), str(is_end.date())],
+                   'oos': [str(oos_start.date()), str(oos_end.date())],
+                   'reproduce': 'python backtest_momentum.py --start %s --end %s'
+                                % (sess[0].date(), sess[-1].date())}, f, indent=2)
 
     if args.measure:
         for strat, grid in sorted(GRID.items()):

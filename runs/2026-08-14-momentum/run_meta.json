@@ -1,0 +1,15 @@
+{
+  "bundle": "alpaca_api",
+  "sessions": 250,
+  "first_session": "2025-08-19",
+  "last_session": "2026-08-14",
+  "is": [
+    "2025-08-21",
+    "2026-04-29"
+  ],
+  "oos": [
+    "2026-04-30",
+    "2026-08-14"
+  ],
+  "reproduce": "python backtest_momentum.py --start 2025-08-19 --end 2026-08-14"
+}
