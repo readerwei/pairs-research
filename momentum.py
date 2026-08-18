@@ -132,6 +132,12 @@ def _engine_leverage_cap():
     It stays here because in a backtest a hard abort on breach is useful: it
     turns a sizing mistake into a failed run instead of a plausible equity
     curve. Live, the check in _apply_targets is the one doing the work.
+
+    Precisely: initialize() does run on the first live start, because
+    LiveTradingAlgorithm only skips it when a state file already exists. From
+    session two onward it never runs again. Relying on it live would therefore
+    protect the first day and silently stop protecting every day after -- worse
+    than not protecting any, because it would look like it worked.
     """
     set_max_leverage(MAX_LEVERAGE)
 
@@ -151,7 +157,12 @@ def make_double_ma_algo(symbols, short_window, long_window):
         _engine_leverage_cap()
 
     def before_trading_start(context, data):
-        _setup(context)          # live never calls initialize(); see CLAUDE.md
+        # initialize() runs only on the very first live start, when no state
+        # file exists yet: LiveTradingAlgorithm.initialize loads the pickle and
+        # returns early whenever one is present. So from the second session
+        # onward this is the only setup hook that runs, and everything has to be
+        # safe to repeat here.
+        _setup(context)
 
     def handle_data(context, data):
         hist = data.history(context.syms, 'price', context.long_window, '1m')
