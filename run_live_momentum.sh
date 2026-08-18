@@ -36,7 +36,23 @@ mkdir -p "$LOG_DIR"
 
 DAY=$(date +%F)
 LOG="$LOG_DIR/live_momentum_$DAY.log"
-exec >>"$LOG" 2>&1
+
+# Under cron there is no terminal and everything must go to the log. Run by
+# hand, sending it all to the log makes a working script look broken: it exits
+# having printed nothing, whether it did its job or fell over.
+#
+# Re-exec through a pipe rather than `exec > >(tee ...)`. Process substitution
+# leaves tee racing the script's own exit, so the last few lines -- the ones
+# that say what happened -- get lost exactly when you are watching for them.
+if [ -z "${_LM_LOGGING:-}" ]; then
+    export _LM_LOGGING=1
+    if [ -t 1 ]; then
+        echo "logging to $LOG"
+        "$0" "$@" 2>&1 | tee -a "$LOG"
+        exit "${PIPESTATUS[0]}"
+    fi
+    exec >>"$LOG" 2>&1
+fi
 echo "=================================================================="
 echo "$(date '+%F %T %Z')  starting wrapper for [$SYMBOLS] N=$N"
 
@@ -70,11 +86,13 @@ PY
 )"
 
 if [ "$IS_SESSION" != "1" ]; then
-    echo "$(date '+%F %T')  not an NYSE session today -- nothing to do"
+    echo "$(date '+%F %T')  not an NYSE session today (weekend or holiday) -- nothing to do"
     exit 0
 fi
 if [ "$SECS_TO_CLOSE" -le 60 ]; then
-    echo "$(date '+%F %T')  session already closed (${SECS_TO_CLOSE}s left) -- exiting"
+    echo "$(date '+%F %T')  today was a session but it closed $(( -SECS_TO_CLOSE / 60 )) minutes ago -- nothing to do"
+    echo "                     (the next run is cron'd for 08:25; to test the wiring"
+    echo "                      outside hours use: python live_smoketest.py --check)"
     exit 0
 fi
 if [ "$SECS_TO_OPEN" -gt 0 ]; then

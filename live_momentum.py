@@ -204,8 +204,19 @@ def main():
         return
 
     if not clock.is_open:
-        print('\nMarket is closed. The algorithm will idle until the next open;'
-              '\nuse --max-seconds if you only meant to smoke-test the wiring.')
+        # Alpaca's clock fields come back tz-aware or naive depending on the
+        # SDK version; normalise before subtracting.
+        nxt = pd.Timestamp(clock.next_open)
+        nxt = nxt.tz_localize('UTC') if nxt.tzinfo is None else nxt.tz_convert('UTC')
+        wait = (nxt - pd.Timestamp.now(tz='UTC')).total_seconds()
+        print('\nMARKET IS CLOSED. Next open %s (in %.1f hours).'
+              % (nxt.tz_convert('America/New_York').strftime('%a %H:%M %Z'),
+                 wait / 3600.0))
+        print('The algorithm will sit idle until then and PRINT NOTHING -- the')
+        print('heartbeat only fires on minute bars, and there are none outside')
+        print('the session. That silence is not a hang.')
+        print('To check the wiring now instead, Ctrl-C and run:')
+        print('    python live_momentum.py --symbols %s --check' % ' '.join(resolved))
 
     from zipline import run_algorithm
     from zipline.gens.brokers.alpaca_broker import ALPACABroker

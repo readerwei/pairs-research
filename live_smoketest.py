@@ -208,6 +208,10 @@ def main():
                     help='bars between zipline-vs-broker reconciliations; 0 off')
     ap.add_argument('--max-seconds', type=float, default=600)
     ap.add_argument('--state-file', default='./live_smoketest.state')
+    ap.add_argument('--no-flatten', action='store_true',
+                    help='leave positions open at the end (default is to close '
+                         'them: a plumbing test should not leave a position '
+                         'behind, and half the exit points are mid-buy)')
     ap.add_argument('--check', action='store_true')
     ap.add_argument('--allow-real-money', action='store_true')
     args = ap.parse_args()
@@ -280,9 +284,25 @@ def main():
         print('   %s %-5s %-4s qty %-4s %s'
               % (o.submitted_at.strftime('%H:%M:%S'), o.symbol, o.side,
                  o.qty, o.status))
-    pos = api.list_positions()
+    pos = [p for p in api.list_positions() if p.symbol in resolved]
     print('broker positions now: %s'
           % (', '.join('%s %s' % (p.symbol, p.qty) for p in pos) or 'flat'))
+
+    # The flip schedule ends on a buy half the time, so without this the test
+    # leaves a position behind -- small, but a test that changes the thing it
+    # measures is not a test.
+    if pos and not args.no_flatten:
+        print('flattening (pass --no-flatten to keep them):')
+        for p in pos:
+            qty = abs(int(float(p.qty)))
+            api.submit_order(symbol=p.symbol, qty=qty,
+                             side='sell' if float(p.qty) > 0 else 'buy',
+                             type='market', time_in_force='day')
+            print('   %s %s' % (p.symbol, p.qty))
+        time.sleep(5)
+        left = [p for p in api.list_positions() if p.symbol in resolved]
+        print('after flatten: %s'
+              % (', '.join('%s %s' % (p.symbol, p.qty) for p in left) or 'flat'))
     return perf
 
 
