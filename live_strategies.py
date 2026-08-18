@@ -243,13 +243,21 @@ class SlippageProbe(LiveStrategy):
         fh = open(path, 'a')
         writer = csv.writer(fh)
         if new:
-            writer.writerow(['submitted_ny', 'symbol', 'side', 'shares',
-                             'algo_price', 'bid', 'ask', 'mid', 'spread_c',
-                             'fill_price', 'fill_ny', 'slip_vs_mid_c',
-                             'slip_vs_touch_c', 'slip_bps', 'latency_s'])
+            # UTC timestamps to microsecond precision are the point: the
+            # bid/ask captured here is IEX, because this account has no
+            # real-time SIP. Fifteen minutes later the true NBBO for these exact
+            # instants becomes queryable, and slippage_reconcile.py goes back
+            # for it. Second-resolution local time would not be enough to find
+            # the prevailing quote -- NBBO updates many times a second.
+            writer.writerow(['submitted_utc', 'fill_utc', 'submitted_ny',
+                             'symbol', 'side', 'shares',
+                             'algo_price', 'iex_bid', 'iex_ask', 'iex_mid',
+                             'iex_spread_c', 'fill_price', 'fill_ny',
+                             'slip_vs_iex_mid_c', 'slip_vs_iex_touch_c',
+                             'slip_bps', 'latency_s'])
             fh.flush()
 
-        st = {'bar': 0, 'i': 0, 'open': None, 'pending': []}
+        st = {'bar': 0, 'i': 0, 'open': None, 'pending': [], 'used': set()}
 
         def _setup(context):
             for n, d in (('n_orders', 0), ('n_blocked', 0)):
@@ -287,13 +295,12 @@ class SlippageProbe(LiveStrategy):
             if not st['pending']:
                 return
             try:
-                closed = {o.id: o for o in api.list_orders(status='closed',
-                                                           limit=50)}
+                closed = list(api.list_orders(status='closed', limit=100))
             except Exception:
                 return
             still = []
             for rec in st['pending']:
-                o = closed.get(rec['id'])
+                o = _match(closed, rec)
                 if o is None or not o.filled_avg_price:
                     still.append(rec)
                     continue
@@ -304,6 +311,8 @@ class SlippageProbe(LiveStrategy):
                 filled_at = pd.Timestamp(o.filled_at).tz_convert(
                     'America/New_York')
                 writer.writerow([
+                    rec['submitted'].tz_convert('UTC').isoformat(),
+                    filled_at.tz_convert('UTC').isoformat(),
                     rec['submitted'].strftime('%H:%M:%S'), rec['symbol'],
                     rec['side'], rec['shares'],
                     round(rec['algo_price'], 4), round(rec['bid'], 4),
@@ -319,29 +328,46 @@ class SlippageProbe(LiveStrategy):
             fh.flush()
             st['pending'] = still
 
+        def _match(closed, rec):
+            """Find the fill for a submitted leg.
+
+            Matching on the order id looked obvious and does not work: zipline
+            submits through the broker and does not hand back Alpaca's id, and
+            querying for "the order that appeared since" races the API -- the
+            new order is frequently not visible yet on the very next call, so
+            every leg was dropped and the CSV stayed empty. Symbol, side and a
+            submission timestamp identify it unambiguously here, because the
+            probe never has two orders outstanding.
+            """
+            best = None
+            for o in closed:
+                if o.symbol != rec['symbol'] or o.side != rec['side']:
+                    continue
+                if o.id in st['used']:
+                    continue
+                sub = pd.Timestamp(o.submitted_at)
+                if sub < rec['submitted'] - pd.Timedelta(seconds=5):
+                    continue
+                if best is None or pd.Timestamp(o.submitted_at) < pd.Timestamp(best.submitted_at):
+                    best = o
+            if best is not None:
+                st['used'].add(best.id)
+            return best
+
         def _submit(context, data, asset, side, shares):
             bid, ask = _quote(asset.symbol)
             try:
                 algo_price = float(data.current(asset, 'price'))
             except Exception:
                 algo_price = float('nan')
-            before = {o.id for o in api.list_orders(status='all', limit=20)}
+            submitted = pd.Timestamp.now(tz='America/New_York')
             order(asset, shares if side == 'buy' else -shares)
             context.n_orders += 1
-            # the id zipline generated is not exposed, so identify the new order
-            # by difference rather than guessing
-            try:
-                after = [o for o in api.list_orders(status='all', limit=20)
-                         if o.id not in before and o.symbol == asset.symbol]
-            except Exception:
-                after = []
-            if after:
-                st['pending'].append({
-                    'id': after[0].id, 'symbol': asset.symbol, 'side': side,
-                    'shares': shares, 'algo_price': algo_price,
-                    'bid': bid, 'ask': ask, 'mid': (bid + ask) / 2.0,
-                    'submitted': pd.Timestamp.now(tz='America/New_York'),
-                })
+            st['pending'].append({
+                'symbol': asset.symbol, 'side': side, 'shares': shares,
+                'algo_price': algo_price, 'bid': bid, 'ask': ask,
+                'mid': (bid + ask) / 2.0, 'submitted': submitted,
+            })
 
         def handle_data(context, data):
             st['bar'] += 1

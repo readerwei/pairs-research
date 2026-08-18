@@ -267,9 +267,17 @@ def flatten(api, symbols):
     say('flatten: closing %s'
         % ', '.join('%s %s' % (p.symbol, p.qty) for p in pos))
     for p in pos:
-        api.submit_order(symbol=p.symbol, qty=abs(int(float(p.qty))),
-                         side='sell' if float(p.qty) > 0 else 'buy',
-                         type='market', time_in_force='day')
+        # A position can vanish between listing and ordering -- an earlier
+        # queued order fills, and Alpaca answers 403 "insufficient qty
+        # available". Raising here propagates out of the finally: block and
+        # masks whatever actually ended the run, which is what happened the
+        # first time this ran.
+        try:
+            api.submit_order(symbol=p.symbol, qty=abs(int(float(p.qty))),
+                             side='sell' if float(p.qty) > 0 else 'buy',
+                             type='market', time_in_force='day')
+        except Exception as e:
+            say('flatten: %s failed (%s)' % (p.symbol, str(e)[:80]))
     if not market_open:
         say('flatten: market is closed -- these are queued and will fill at '
             'the next open')
@@ -343,11 +351,15 @@ def run_once(args, strategy, params):
         should_flatten = (strategy.flatten_on_exit
                           if args.flatten is None else args.flatten)
         if should_flatten:
-            flatten(api, symbols)
+            try:
+                flatten(api, symbols)
+            except Exception as e:
+                say('flatten failed entirely: %s' % str(e)[:120])
 
 
 def run_session(args, strategy, params):
     """A full trading day, supervising --once children."""
+    log_fh = getattr(sys.stdout, 'file', None) or sys.__stdout__
     cal = config.nyse()
     is_session, to_open, to_close = session_window(cal)
     if not is_session:
@@ -385,7 +397,11 @@ def run_session(args, strategy, params):
         # A subprocess, so a crash in the engine cannot take the supervisor with
         # it, and a hard timeout can bound a hang the watchdog missed.
         try:
+            # Children inherit fd 1, not the parent's Python-level Tee, so their
+            # output -- including tracebacks -- bypassed the session log
+            # entirely. Hand them the file directly.
             rc = subprocess.call(child + ['--max-seconds', str(int(remaining))],
+                                 stdout=log_fh, stderr=subprocess.STDOUT,
                                  timeout=remaining + 120)
         except subprocess.TimeoutExpired:
             say('child exceeded its own deadline by 120s -- killed')
