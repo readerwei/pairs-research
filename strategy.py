@@ -88,9 +88,17 @@ def make_algo(sym_a, sym_b, lookback, entry_z, exit_z,
 
     def initialize(context):
         _setup(context)
-        set_commission(commission.PerShare(cost=config.COMMISSION_PER_SHARE,
-                                           min_trade_cost=config.COMMISSION_MIN))
-        set_slippage(slippage.VolumeShareSlippage())
+        if config.REALISTIC_COSTS:
+            # Alpaca charges no commission; what is paid is the spread plus SEC
+            # and FINRA fees on sells. The old PerShare($0.005, $1 min) was an
+            # Interactive Brokers schedule and does not describe this account.
+            import costs
+            costs.apply()
+        else:
+            set_commission(commission.PerShare(
+                cost=config.COMMISSION_PER_SHARE,
+                min_trade_cost=config.COMMISSION_MIN))
+            set_slippage(slippage.VolumeShareSlippage())
         set_max_leverage(config.MAX_LEVERAGE)
 
     def before_trading_start(context, data):

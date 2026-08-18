@@ -172,8 +172,11 @@ GROSS_REBALANCE_AT = 1.05    # gross above this while open -> resize to target
 STOP_Z = 4.0                 # |z| beyond this means the relationship broke: flatten
 CAPITAL_BASE = 100000
 
-COMMISSION_PER_SHARE = 0.005
-COMMISSION_MIN = 1.0
+# Alpaca charges no commission on US equities; see costs.py. Set
+# REALISTIC_COSTS=0 in the environment to reproduce the old (wrong) numbers.
+REALISTIC_COSTS = os.environ.get('REALISTIC_COSTS', '1') != '0'
+COMMISSION_PER_SHARE = 0.005     # legacy model only
+COMMISSION_MIN = 1.0             # legacy model only
 
 
 def run_dir(date_str=None):

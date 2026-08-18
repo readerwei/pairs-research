@@ -47,10 +47,25 @@ from __future__ import print_function
 from zipline.finance.commission import EquityCommissionModel
 from zipline.finance.slippage import LiquidityExceeded, SlippageModel
 
-# half-spread in basis points, per side, from the measurement above
+# Half-spread in basis points, per side, all measured from SIP NBBO quotes.
+#
+# The wide range is the point, and it is not about company size: LOW at 5.53bp
+# is 35x IWM at 0.16bp, and COST at 2.89bp costs more to trade than XLE at 0.81
+# despite being the larger company. Spread tracks share price and quoting
+# interest, not market cap -- which is why one global slippage rate cannot work.
 HALF_SPREAD_BPS = {
-    'SPY': 0.06, 'QQQ': 0.14, 'GOOG': 0.88, 'UNH': 1.65, 'AMD': 1.93,
+    # momentum universe
+    'SPY': 0.06, 'QQQ': 0.14, 'UNH': 1.65, 'AMD': 1.93,
     'AAL': 3.32, 'F': 3.56, 'NIO': 10.95,
+    # pairs universe
+    'IWM': 0.16, 'DIA': 0.28, 'XLV': 0.30, 'AAPL': 0.33, 'GLD': 0.37,
+    'WMT': 0.43, 'LQD': 0.47, 'XLK': 0.52, 'XLI': 0.54, 'IEF': 0.54,
+    'GDX': 0.55, 'AMZN': 0.57, 'KO': 0.57, 'XLP': 0.59, 'TLT': 0.61,
+    'XOM': 0.63, 'HYG': 0.63, 'PEP': 0.72, 'GOOG': 0.73, 'BAC': 0.78,
+    'MSFT': 0.81, 'XLE': 0.81, 'XLF': 0.86, 'CVX': 1.01, 'VZ': 1.04,
+    'PG': 1.04, 'META': 1.11, 'V': 1.25, 'UPS': 1.44, 'JPM': 1.51,
+    'MA': 1.95, 'T': 2.02, 'HD': 2.07, 'FDX': 2.39, 'COST': 2.89,
+    'LOW': 5.53,
 }
 # Anything unmeasured. The measured large caps sit near 1-2bp; 2.5 is a little
 # pessimistic on purpose, since an unmeasured name is more likely to be thinner

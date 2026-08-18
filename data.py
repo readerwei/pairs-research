@@ -72,6 +72,22 @@ def close_prices(start, end, symbols=None):
     return px
 
 
+def session_range():
+    """config.session_range() clamped to what the bundle actually holds.
+
+    config computes the window from the exchange calendar, which knows about
+    today; the bundle only knows about its last ingest. When the two disagree --
+    pairs_research ends 2026-08-14 while the calendar has already opened
+    2026-08-17 -- zipline raises LookupError deep inside the history loader
+    rather than saying the bundle is stale.
+    """
+    start, end = config.session_range()
+    d = load_bundle()
+    first = pd.Timestamp(d.equity_daily_bar_reader.first_trading_day)
+    last = pd.Timestamp(d.equity_daily_bar_reader.last_available_dt)
+    return max(start, first), min(end, last)
+
+
 def candidate_pairs():
     """Every within-group symbol pair that survived ingest, as (a, b) tuples."""
     have = set(available_symbols())
