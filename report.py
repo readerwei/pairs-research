@@ -97,7 +97,18 @@ def gate(row):
     if row['max_dd'] < MAX_OOS_DRAWDOWN:
         reasons.append('OOS drawdown %.1f%% worse than %.0f%%'
                        % (row['max_dd'] * 100, MAX_OOS_DRAWDOWN * 100))
-    if row['is_sharpe'] > 0 and row['sharpe'] < MIN_SHARPE_RETENTION * row['is_sharpe']:
+    # A config that lost money in sample must not reach live capital on the
+    # strength of its out-of-sample number alone. Guarding the retention check
+    # with `is_sharpe > 0` used to let exactly that through: CVX/XOM on the
+    # 2026-08-14 data has IS sharpe -0.02 and OOS 1.25, and skipped retention
+    # entirely. A negative in-sample Sharpe means the parameter search found
+    # nothing, so a good OOS number is the sampling noise the holdout exists to
+    # expose -- not evidence.
+    if row['is_sharpe'] <= 0:
+        reasons.append('IS sharpe %.2f is not positive -- OOS %.2f is '
+                       'unsupported by the in-sample window'
+                       % (row['is_sharpe'], row['sharpe']))
+    elif row['sharpe'] < MIN_SHARPE_RETENTION * row['is_sharpe']:
         reasons.append('kept only %.0f%% of IS sharpe (need %.0f%%)'
                        % (100.0 * row['sharpe'] / row['is_sharpe'],
                           100 * MIN_SHARPE_RETENTION))

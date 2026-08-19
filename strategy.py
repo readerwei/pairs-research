@@ -41,7 +41,20 @@ import config  # noqa: E402
 
 
 def zscore_and_beta(prices_a, prices_b):
-    """(z, beta) from the log-price residual, or (None, None) if unusable."""
+    """(z, beta) from the log-price residual, or (None, None) if unusable.
+
+    The beta bounds are enforced HERE, not only in the screen. screen_pairs
+    checks MIN_BETA/MAX_BETA once, on the full in-sample window; this refits on
+    a rolling `lookback` window, and the two do not have to agree. Measured on
+    the 2026-08-14 run, AMZN/GOOG passed the screen at beta=1.23 and then spent
+    110 of 252 out-of-sample sessions with a rolling beta outside [0.30, 3.00].
+
+    A beta near zero means the fit found no relationship over the window, so
+    the "spread" degenerates to log(A) minus a constant -- a single-name bet
+    with the second leg attached as an arbitrary dollar hedge. That is the
+    failure the screen's bounds exist to prevent, so they have to hold at the
+    moment the signal is used, not just at admission.
+    """
     a = np.asarray(prices_a, dtype=float)
     b = np.asarray(prices_b, dtype=float)
     if np.isnan(a).any() or np.isnan(b).any():
@@ -52,6 +65,10 @@ def zscore_and_beta(prices_a, prices_b):
     if lb.std() == 0:
         return None, None
     beta, intercept = np.polyfit(lb, la, 1)
+    # abs(): a negative beta is a valid inverse relationship, and the bounds
+    # describe the magnitude of the hedge, not its direction.
+    if not (config.MIN_BETA <= abs(beta) <= config.MAX_BETA):
+        return None, None
     spread = la - (beta * lb + intercept)
     sd = spread.std()
     if sd == 0:
@@ -112,7 +129,7 @@ def make_algo(sym_a, sym_b, lookback, entry_z, exit_z,
 
         z, beta = zscore_and_beta(hist[context.a].values, hist[context.b].values)
         if z is None:
-            record(z=np.nan, beta=np.nan, gross=context.account.leverage)
+            record(z=np.nan, hedge_beta=np.nan, gross=context.account.leverage)
             return
 
         pos = context.portfolio.positions
@@ -144,13 +161,13 @@ def make_algo(sym_a, sym_b, lookback, entry_z, exit_z,
             target_a, target_b = +w, -w        # A cheap vs B
             context.n_entries += 1
         else:
-            record(z=z, beta=beta, gross=context.account.leverage)
+            record(z=z, hedge_beta=beta, gross=context.account.leverage)
             return
 
         if data.can_trade(context.a) and data.can_trade(context.b):
             order_target_percent(context.a, target_a)
             order_target_percent(context.b, target_b)
 
-        record(z=z, beta=beta, gross=context.account.leverage)
+        record(z=z, hedge_beta=beta, gross=context.account.leverage)
 
     return initialize, handle_data, before_trading_start

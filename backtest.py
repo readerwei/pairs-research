@@ -35,7 +35,24 @@ import config  # noqa: E402
 import data as rdata  # noqa: E402
 import strategy  # noqa: E402
 
-MIN_ROUND_TRIPS = 6      # in-sample; below this the Sharpe is an accident
+# In-sample round-trip floor, DERIVED from the out-of-sample one rather than
+# picked. report.MIN_OOS_ROUND_TRIPS applies to the OOS window; this applies to
+# the IS window, and the two are different lengths. A flat 6 meant a config
+# scraping through IS (629 sessions) projected to ~3 round trips over OOS (311
+# sessions) against a floor of 5 -- pre-destined to fail the gate it was being
+# selected for. Scaling by the window ratio makes the two agree.
+#
+#   IS sessions / OOS sessions = (1 - OOS_FRACTION) / OOS_FRACTION
+#
+# The +1 is a margin: trade frequency decays out of sample more often than it
+# rises, so matching the projection exactly still fails about half the time.
+def _min_round_trips():
+    import report
+    ratio = (1.0 - config.OOS_FRACTION) / config.OOS_FRACTION
+    return int(np.ceil(report.MIN_OOS_ROUND_TRIPS * ratio)) + 1
+
+
+MIN_ROUND_TRIPS = _min_round_trips()      # 13 at OOS_FRACTION=0.30, floor 5
 
 _BENCH = {}
 
