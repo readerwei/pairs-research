@@ -218,6 +218,37 @@ MAX_LEVERAGE = 1.15
 MAX_POSITION_PCT = 0.50      # per-leg cap, as a share of portfolio value
 GROSS_REBALANCE_AT = 1.05    # gross above this while open -> resize to target
 STOP_Z = 4.0                 # |z| beyond this means the relationship broke: flatten
+
+# Stop on realised spread P&L as well as on |z|. STOP_Z is computed from the
+# SAME rolling fit that generates the signal, so when the estimate breaks the
+# stop breaks with it -- a beta drifting toward zero shrinks the spread's
+# standard deviation and can hold |z| inside the band while the position bleeds.
+# A loss limit needs nothing from the model to fire. ML4T ch.9 uses -20% on the
+# spread; -15% here to sit inside MAX_OOS_DRAWDOWN so a single pair cannot
+# spend the whole portfolio drawdown budget.
+STOP_LOSS_PCT = -0.15
+USE_PNL_STOP = os.environ.get('USE_PNL_STOP', '1') != '0'
+
+# Size the second leg by the hedge ratio instead of holding 1:-1 in dollars.
+#
+# Dollar-neutral sizing is a deliberate choice -- it keeps estimation error out
+# of position sizing, which matters because beta is noisy. But it means the
+# spread that was tested for stationarity is NOT the spread being held, and the
+# gap was never measured. On the 2026-08-14 out-of-sample window AMZN/GOOG
+# should have hedged at 0.187 and instead held 1.000, leaving the book short
+# ~0.46 units of residual GOOG: 19.2% of daily P&L variance was unhedged
+# directional exposure rather than spread convergence.
+#
+# OFF by default. Turning it on trades a known, measured bias for an unknown
+# amount of estimation noise, and that trade has not been validated out of
+# sample yet. The diagnostic below is on regardless, so the cost of leaving it
+# off is visible in every report.
+USE_BETA_SIZING = os.environ.get('USE_BETA_SIZING', '0') != '0'
+
+# Hedge ratios outside this band are not applied even when sizing is on: past
+# here one leg dominates so heavily that the position is a directional bet with
+# extra commission, and the estimate is usually broken rather than extreme.
+BETA_SIZING_CLAMP = (0.25, 4.0)
 CAPITAL_BASE = 100000
 
 # Alpaca charges no commission on US equities; see costs.py. Set

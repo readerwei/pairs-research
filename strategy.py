@@ -101,6 +101,8 @@ def make_algo(sym_a, sym_b, lookback, entry_z, exit_z,
         context.stop_z = stop_z
         context.n_entries = 0
         context.n_stops = 0
+        context.n_pnl_stops = 0
+        context.entry_value = None     # portfolio value when the pair opened
         context._ready = True
 
     def initialize(context):
@@ -141,11 +143,41 @@ def make_algo(sym_a, sym_b, lookback, entry_z, exit_z,
         # which tracks a portfolio that has grown or shrunk.
         w = min(max_gross / 2.0, config.MAX_POSITION_PCT)
 
+        # Leg weights. Dollar-neutral by default: equal and opposite, so beta
+        # drives the signal but not the sizing. With USE_BETA_SIZING the second
+        # leg is scaled by the hedge ratio so the position actually holds the
+        # spread that was tested for stationarity -- see config.
+        w_a, w_b = w, w
+        if config.USE_BETA_SIZING:
+            lo, hi = config.BETA_SIZING_CLAMP
+            hedge = abs(beta)
+            if lo <= hedge <= hi:
+                # Keep total gross at 2w so the sizing choice does not silently
+                # change leverage: split 2w between the legs in ratio 1:hedge.
+                w_a = 2.0 * w / (1.0 + hedge)
+                w_b = w_a * hedge
+                cap = config.MAX_POSITION_PCT
+                if max(w_a, w_b) > cap:      # re-scale rather than clip one leg
+                    scale = cap / max(w_a, w_b)
+                    w_a, w_b = w_a * scale, w_b * scale
+
         gross = context.account.leverage
+
+        # Realised P&L on the pair since entry, as a share of the portfolio
+        # value it was opened against. Independent of the z-score, so it still
+        # fires when the fit that produces z has itself broken.
+        pnl_pct = None
+        if in_market and context.entry_value:
+            pnl_pct = (context.portfolio.portfolio_value /
+                       context.entry_value - 1.0)
 
         if in_market and abs(z) >= context.stop_z:
             target_a, target_b = 0.0, 0.0      # relationship broke -- get out
             context.n_stops += 1
+        elif (in_market and config.USE_PNL_STOP and pnl_pct is not None and
+                pnl_pct <= config.STOP_LOSS_PCT):
+            target_a, target_b = 0.0, 0.0      # bleeding regardless of z
+            context.n_pnl_stops += 1
         elif in_market and abs(z) <= context.exit_z:
             target_a, target_b = 0.0, 0.0      # reverted -- take it
         elif in_market and gross > config.GROSS_REBALANCE_AT:
@@ -153,16 +185,21 @@ def make_algo(sym_a, sym_b, lookback, entry_z, exit_z,
             # already positioned -- do NOT re-read z here, or a position would
             # silently flip side on a drift event.
             sign = 1.0 if held.amount > 0 else -1.0
-            target_a, target_b = sign * w, -sign * w
+            target_a, target_b = sign * w_a, -sign * w_b
         elif not in_market and z >= context.entry_z:
-            target_a, target_b = -w, +w        # A rich vs B
+            target_a, target_b = -w_a, +w_b    # A rich vs B
             context.n_entries += 1
+            context.entry_value = context.portfolio.portfolio_value
         elif not in_market and z <= -context.entry_z:
-            target_a, target_b = +w, -w        # A cheap vs B
+            target_a, target_b = +w_a, -w_b    # A cheap vs B
             context.n_entries += 1
+            context.entry_value = context.portfolio.portfolio_value
         else:
             record(z=z, hedge_beta=beta, gross=context.account.leverage)
             return
+
+        if target_a == 0.0 and target_b == 0.0:
+            context.entry_value = None
 
         if data.can_trade(context.a) and data.can_trade(context.b):
             order_target_percent(context.a, target_a)
