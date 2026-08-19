@@ -29,6 +29,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
+import data as rdata  # noqa: E402
 
 # promotion gate
 MIN_OOS_SHARPE = 0.50
@@ -122,13 +123,18 @@ def main():
 
     out_dir = config.run_dir(args.date)
     date_str = os.path.basename(out_dir)
-    start, end = config.session_range()
+    # rdata.session_range(), not config's: config computes the window from the
+    # exchange calendar, which knows about today, while the bundle stops at its
+    # last ingest. When the two disagree -- pairs_research ending 2026-08-14
+    # while the calendar has opened 2026-08-18 -- zipline raises a bare
+    # KeyError from deep inside the history loader instead of saying the bundle
+    # is stale.
+    start, end = rdata.session_range()
     is_start, is_end, oos_start, oos_end = config.split_sessions(start, end)
 
     lines = []
     add = lines.append
     try:
-        import data as rdata
         n_syms = len(rdata.available_symbols())
     except Exception:
         n_syms = len(config.UNIVERSE)

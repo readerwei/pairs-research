@@ -118,9 +118,23 @@ def run_one(sym_a, sym_b, lookback, entry_z, exit_z, start, end,
     return m, perf
 
 
-def grid_for_pair(sym_a, sym_b, start, end):
+def grid_for_pair(sym_a, sym_b, start, end, half_life=None):
+    """In-sample grid for one pair.
+
+    When config.USE_HALF_LIFE_WINDOW is on and the screen measured a usable
+    half-life, `lookback` is not searched: it is derived once from that
+    half-life and held fixed while entry_z/exit_z vary. That drops the grid
+    from ~15 configs to ~5 and removes the parameter that was doing the most
+    overfitting -- see config.window_for_half_life.
+    """
+    if config.USE_HALF_LIFE_WINDOW:
+        w = config.window_for_half_life(half_life)
+        lookbacks = [w] if w is not None else config.GRID_LOOKBACK
+    else:
+        lookbacks = config.GRID_LOOKBACK
+
     rows = []
-    combos = list(itertools.product(config.GRID_LOOKBACK, config.GRID_ENTRY_Z,
+    combos = list(itertools.product(lookbacks, config.GRID_ENTRY_Z,
                                     config.GRID_EXIT_Z))
     for lb, ez, xz in combos:
         if xz >= ez:
@@ -163,7 +177,13 @@ def main():
                     help='with --pair: run on the out-of-sample window')
     args = ap.parse_args()
 
-    start, end = config.session_range()
+    # rdata.session_range(), not config's: config computes the window from the
+    # exchange calendar, which knows about today, while the bundle stops at its
+    # last ingest. When the two disagree -- pairs_research ending 2026-08-14
+    # while the calendar has opened 2026-08-18 -- zipline raises a bare
+    # KeyError from deep inside the history loader instead of saying the bundle
+    # is stale.
+    start, end = rdata.session_range()
     is_start, is_end, oos_start, oos_end = config.split_sessions(start, end)
     out_dir = config.run_dir(args.date)
 
@@ -191,8 +211,15 @@ def main():
     all_is, winners = [], []
     for _, c in cands.iterrows():
         a, b = c['sym_a'], c['sym_b']
-        print('  %s / %s  (%s)' % (a, b, c['group']))
-        g = grid_for_pair(a, b, is_start, is_end)
+        hl = c.get('half_life')
+        if config.USE_HALF_LIFE_WINDOW:
+            w = config.window_for_half_life(hl)
+            print('  %s / %s  (%s)  half-life %.1f -> window %s'
+                  % (a, b, c['group'], hl,
+                     w if w is not None else 'unusable, grid search'))
+        else:
+            print('  %s / %s  (%s)' % (a, b, c['group']))
+        g = grid_for_pair(a, b, is_start, is_end, half_life=hl)
         if g.empty:
             print('    no completed runs\n')
             continue

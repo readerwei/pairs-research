@@ -139,7 +139,13 @@ def main():
     ap.add_argument('--date', default=None, help='run folder name (default: today)')
     args = ap.parse_args()
 
-    start, end = config.session_range()
+    # rdata.session_range(), not config's: config computes the window from the
+    # exchange calendar, which knows about today, while the bundle stops at its
+    # last ingest. When the two disagree -- pairs_research ending 2026-08-14
+    # while the calendar has opened 2026-08-18 -- zipline raises a bare
+    # KeyError from deep inside the history loader instead of saying the bundle
+    # is stale.
+    start, end = rdata.session_range()
     is_start, is_end, oos_start, oos_end = config.split_sessions(start, end)
     print('in-sample     : %s -> %s' % (is_start.date(), is_end.date()))
     print('out-of-sample : %s -> %s  (held out, not read here)'
