@@ -41,10 +41,44 @@ import sys
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.stattools import coint
+from statsmodels.tsa.vector_ar.vecm import coint_johansen
+from statsmodels.tsa.api import VAR
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 import data as rdata  # noqa: E402
+
+
+def johansen(ya, xb, max_lag=10):
+    """(trace0, trace1, hedge_ratio) from the Johansen procedure.
+
+    Engle-Granger asks whether the residual of one specific regression is
+    stationary, so it is direction-dependent -- coint(A, B) and coint(B, A) can
+    disagree -- and it hands back a p-value with no vector attached. Johansen
+    tests the system, is symmetric, and returns the cointegrating vector
+    itself, which is the thing a hedge should actually be built from.
+
+    trace0 tests rank 0 (no cointegration) and trace1 tests rank <= 1; a pair
+    is cointegrated when trace0 clears its critical value. The hedge ratio is
+    -w2/w1 from the eigenvector of the strongest relationship, normalised on
+    the first leg.
+
+    Returns (nan, nan, nan) when the fit fails -- these are numerically fragile
+    on short or near-degenerate windows and must not take the screen down.
+    """
+    df = pd.DataFrame({'a': ya, 'b': xb})
+    try:
+        # Lag order from AIC rather than a hardcoded constant: the right number
+        # of lags is a property of the pair. Cap it so a long window cannot
+        # select an order that eats the degrees of freedom.
+        k = VAR(df.values).select_order(maxlags=max_lag).selected_orders['aic']
+        k = max(1, int(k))
+        cj = coint_johansen(df.values, det_order=0, k_ar_diff=k)
+        w = cj.evec[:, cj.ind[0]]
+        hr = float(-w[1] / w[0]) if w[0] != 0 else np.nan
+        return float(cj.lr1[0]), float(cj.lr1[1]), hr
+    except Exception:
+        return np.nan, np.nan, np.nan
 
 
 def half_life(spread):
@@ -81,10 +115,19 @@ def pair_stats(px, a, b):
     rets = np.log(sub).diff().dropna()
     corr = float(rets[a].corr(rets[b]))
 
+    # Engle-Granger BOTH directions. The test regresses one series on the other
+    # and asks whether the residual is stationary, so it is not symmetric:
+    # coint(A, B) and coint(B, A) routinely disagree, and running one arbitrary
+    # direction means the screen's answer depends on symbol ordering. Take the
+    # stronger of the two, as ML4T ch.9 does.
     try:
-        _, pval, _ = coint(ya, xb)
+        _, p_ab, _ = coint(ya, xb)
+        _, p_ba, _ = coint(xb, ya)
+        pval = float(min(p_ab, p_ba))
     except Exception:
         return None
+
+    trace0, trace1, jo_hr = johansen(ya, xb)
 
     beta, intercept = np.polyfit(xb, ya, 1)
     spread = ya - (beta * xb + intercept)
@@ -96,6 +139,11 @@ def pair_stats(px, a, b):
         'n_sessions': len(sub),
         'corr': corr,
         'coint_p': float(pval),
+        'coint_p_ab': float(p_ab),
+        'coint_p_ba': float(p_ba),
+        'trace0': trace0,
+        'trace1': trace1,
+        'johansen_hedge': jo_hr,
         'beta': float(beta),
         'intercept': float(intercept),
         'half_life': half_life(spread),
@@ -113,9 +161,19 @@ def screen(px, keep_all=False):
         if st is None:
             continue
         st['group'] = group
+        st['eg_sig'] = bool(st['coint_p'] <= config.MAX_COINT_PVALUE)
+        # Johansen agrees only when BOTH trace statistics clear -- trace0
+        # rejects "no cointegration" and trace1 confirms rank is not higher
+        # than the single relationship a pair can support.
+        st['johansen_sig'] = bool(
+            np.isfinite(st['trace0']) and
+            st['trace0'] > config.JOHANSEN_TRACE0_CV and
+            st['trace1'] > config.JOHANSEN_TRACE1_CV)
+        coint_ok = (st['eg_sig'] and st['johansen_sig']
+                    if config.REQUIRE_BOTH_COINT_TESTS else st['eg_sig'])
         st['passes'] = bool(
             abs(st['corr']) >= config.MIN_ABS_CORR and
-            st['coint_p'] <= config.MAX_COINT_PVALUE and
+            coint_ok and
             config.MIN_HALF_LIFE <= st['half_life'] <= config.MAX_HALF_LIFE and
             config.MIN_BETA <= st['beta'] <= config.MAX_BETA)
         rows.append(st)

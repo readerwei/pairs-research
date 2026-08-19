@@ -136,6 +136,25 @@ def split_sessions(start, end, cal=None, warmup=True):
 # rejecting.
 MIN_ABS_CORR = 0.55          # |corr| of daily log returns, in-sample
 MAX_COINT_PVALUE = 0.05      # Engle-Granger p-value, in-sample
+
+# Johansen trace-statistic critical values at 95%, for a 2-variable system with
+# a constant (det_order=0). trace0 tests rank 0 (no cointegrating relationship)
+# and is the one that decides; trace1 tests rank <= 1.
+JOHANSEN_TRACE0_CV = 15.4943
+JOHANSEN_TRACE1_CV = 3.8415
+
+# Require Engle-Granger and Johansen to AGREE before a pair is admitted, per
+# Gonzalo & Lee (1998). The two tests ask different questions -- EG whether one
+# specific residual is stationary, Johansen whether the system has a
+# cointegrating rank -- and they disagree far more often than either being
+# wrong would suggest. In ML4T ch.9, over ~46,000 pairs, Johansen flagged 3.2%
+# and EG 6.5%, and they concurred on only 366. Insisting on agreement is the
+# cheapest available defence against the false positives this screen is
+# otherwise swamped by (~150 pairs at p<=0.05 yields ~7 by chance alone).
+#
+# Set REQUIRE_BOTH_COINT_TESTS=0 in the environment to fall back to EG only.
+REQUIRE_BOTH_COINT_TESTS = os.environ.get('REQUIRE_BOTH_COINT_TESTS', '1') != '0'
+
 MIN_HALF_LIFE = 2.0          # sessions; faster than this is noise/microstructure
 MAX_HALF_LIFE = 60.0         # slower than this won't round-trip often enough
 TOP_N_PAIRS = 12             # candidates carried into the backtest grid
