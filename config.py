@@ -219,14 +219,23 @@ MAX_POSITION_PCT = 0.50      # per-leg cap, as a share of portfolio value
 GROSS_REBALANCE_AT = 1.05    # gross above this while open -> resize to target
 STOP_Z = 4.0                 # |z| beyond this means the relationship broke: flatten
 
-# Stop on realised spread P&L as well as on |z|. STOP_Z is computed from the
+# Stop on the pair's own P&L as well as on |z|. STOP_Z is computed from the
 # SAME rolling fit that generates the signal, so when the estimate breaks the
 # stop breaks with it -- a beta drifting toward zero shrinks the spread's
 # standard deviation and can hold |z| inside the band while the position bleeds.
-# A loss limit needs nothing from the model to fire. ML4T ch.9 uses -20% on the
-# spread; -15% here to sit inside MAX_OOS_DRAWDOWN so a single pair cannot
-# spend the whole portfolio drawdown budget.
-STOP_LOSS_PCT = -0.15
+# A loss limit needs nothing from the model to fire.
+#
+# Measured on the LEGS (strategy.spread_return: unrealised P&L over capital
+# deployed), not on portfolio equity. Equity is diluted by gross -- at the
+# dollar-neutral ~0.9 this book runs, a 15% equity loss needs a ~17% adverse
+# spread move, so a threshold written against portfolio_value is far looser
+# than it reads and never fired on any 2026-08-14 position (worst entry-relative
+# drawdown there was -9.6%).
+#
+# -10% on the legs is deliberately tighter than ML4T ch.9's -20% on the spread:
+# theirs is one of 100-2400 concurrent pairs, while a config here is the whole
+# book, so a single position must not spend the entire MAX_OOS_DRAWDOWN budget.
+STOP_LOSS_PCT = -0.10
 USE_PNL_STOP = os.environ.get('USE_PNL_STOP', '1') != '0'
 
 # Size the second leg by the hedge ratio instead of holding 1:-1 in dollars.
