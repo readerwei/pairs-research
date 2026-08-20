@@ -1,0 +1,11 @@
+[
+  {
+    "sym_a": "AMZN",
+    "sym_b": "GOOG",
+    "lookback": 32,
+    "entry_z": 2.5,
+    "exit_z": 0.5,
+    "oos_sharpe": 1.0859170577450654,
+    "as_of": "2026-08-20"
+  }
+]

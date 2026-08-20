@@ -136,6 +136,25 @@ def split_sessions(start, end, cal=None, warmup=True):
 # rejecting.
 MIN_ABS_CORR = 0.55          # |corr| of daily log returns, in-sample
 MAX_COINT_PVALUE = 0.05      # Engle-Granger p-value, in-sample
+
+# Johansen trace-statistic critical values at 95%, for a 2-variable system with
+# a constant (det_order=0). trace0 tests rank 0 (no cointegrating relationship)
+# and is the one that decides; trace1 tests rank <= 1.
+JOHANSEN_TRACE0_CV = 15.4943
+JOHANSEN_TRACE1_CV = 3.8415
+
+# Require Engle-Granger and Johansen to AGREE before a pair is admitted, per
+# Gonzalo & Lee (1998). The two tests ask different questions -- EG whether one
+# specific residual is stationary, Johansen whether the system has a
+# cointegrating rank -- and they disagree far more often than either being
+# wrong would suggest. In ML4T ch.9, over ~46,000 pairs, Johansen flagged 3.2%
+# and EG 6.5%, and they concurred on only 366. Insisting on agreement is the
+# cheapest available defence against the false positives this screen is
+# otherwise swamped by (~150 pairs at p<=0.05 yields ~7 by chance alone).
+#
+# Set REQUIRE_BOTH_COINT_TESTS=0 in the environment to fall back to EG only.
+REQUIRE_BOTH_COINT_TESTS = os.environ.get('REQUIRE_BOTH_COINT_TESTS', '1') != '0'
+
 MIN_HALF_LIFE = 2.0          # sessions; faster than this is noise/microstructure
 MAX_HALF_LIFE = 60.0         # slower than this won't round-trip often enough
 TOP_N_PAIRS = 12             # candidates carried into the backtest grid
@@ -153,9 +172,38 @@ GRID_LOOKBACK = [30, 60, 90]
 GRID_ENTRY_Z = [1.5, 2.0, 2.5]
 GRID_EXIT_Z = [0.0, 0.5]
 
+# Derive the z-score window from the pair's own measured half-life instead of
+# searching GRID_LOOKBACK. The lookback that defines a spread is a property of
+# the PAIR, not a free parameter: a spread reverting in 5 sessions and one
+# taking 40 do not want the same window. half_life is already computed by the
+# screen and then discarded, so this costs nothing and removes 3 values from
+# the grid (~1/3 of the hypotheses per run).
+#
+# window = HALF_LIFE_WINDOW_MULT * half_life, clamped to the bounds below.
+# Validated on the 2026-08-14 run: the un-searched window matched or beat the
+# best-of-15 grid winner out of sample on 4 of 5 pairs, and lifted AMZN/GOOG
+# from 3 round trips / 14.1% exposure to 12 / 37.6% at the same total return.
+# Set to 0 in the environment to restore the grid search.
+USE_HALF_LIFE_WINDOW = os.environ.get('USE_HALF_LIFE_WINDOW', '1') != '0'
+HALF_LIFE_WINDOW_MULT = 2.0
+MIN_LOOKBACK = 10            # shorter than this the OLS slope is noise
+
 # Sessions of history the in-sample backtest gives up so the longest lookback
 # above has data behind it on its first bar.
 WARMUP_SESSIONS = max(GRID_LOOKBACK) + 5
+
+# The derived window has to fit inside the warmup the IS window already gives
+# up, or the first bar reaches back before the data starts.
+MAX_LOOKBACK = WARMUP_SESSIONS - 5
+
+
+def window_for_half_life(hl):
+    """Z-score lookback implied by an OU half-life, clamped to usable bounds."""
+    import math
+    if hl is None or not math.isfinite(hl) or hl <= 0:
+        return None
+    w = int(round(HALF_LIFE_WINDOW_MULT * hl))
+    return max(MIN_LOOKBACK, min(MAX_LOOKBACK, w))
 
 # --------------------------------------------------------------------------
 # risk controls -- applied inside every backtest, not just live
@@ -170,6 +218,46 @@ MAX_LEVERAGE = 1.15
 MAX_POSITION_PCT = 0.50      # per-leg cap, as a share of portfolio value
 GROSS_REBALANCE_AT = 1.05    # gross above this while open -> resize to target
 STOP_Z = 4.0                 # |z| beyond this means the relationship broke: flatten
+
+# Stop on the pair's own P&L as well as on |z|. STOP_Z is computed from the
+# SAME rolling fit that generates the signal, so when the estimate breaks the
+# stop breaks with it -- a beta drifting toward zero shrinks the spread's
+# standard deviation and can hold |z| inside the band while the position bleeds.
+# A loss limit needs nothing from the model to fire.
+#
+# Measured on the LEGS (strategy.spread_return: unrealised P&L over capital
+# deployed), not on portfolio equity. Equity is diluted by gross -- at the
+# dollar-neutral ~0.9 this book runs, a 15% equity loss needs a ~17% adverse
+# spread move, so a threshold written against portfolio_value is far looser
+# than it reads and never fired on any 2026-08-14 position (worst entry-relative
+# drawdown there was -9.6%).
+#
+# -10% on the legs is deliberately tighter than ML4T ch.9's -20% on the spread:
+# theirs is one of 100-2400 concurrent pairs, while a config here is the whole
+# book, so a single position must not spend the entire MAX_OOS_DRAWDOWN budget.
+STOP_LOSS_PCT = -0.10
+USE_PNL_STOP = os.environ.get('USE_PNL_STOP', '1') != '0'
+
+# Size the second leg by the hedge ratio instead of holding 1:-1 in dollars.
+#
+# Dollar-neutral sizing is a deliberate choice -- it keeps estimation error out
+# of position sizing, which matters because beta is noisy. But it means the
+# spread that was tested for stationarity is NOT the spread being held, and the
+# gap was never measured. On the 2026-08-14 out-of-sample window AMZN/GOOG
+# should have hedged at 0.187 and instead held 1.000, leaving the book short
+# ~0.46 units of residual GOOG: 19.2% of daily P&L variance was unhedged
+# directional exposure rather than spread convergence.
+#
+# OFF by default. Turning it on trades a known, measured bias for an unknown
+# amount of estimation noise, and that trade has not been validated out of
+# sample yet. The diagnostic below is on regardless, so the cost of leaving it
+# off is visible in every report.
+USE_BETA_SIZING = os.environ.get('USE_BETA_SIZING', '0') != '0'
+
+# Hedge ratios outside this band are not applied even when sizing is on: past
+# here one leg dominates so heavily that the position is a directional bet with
+# extra commission, and the estimate is usually broken rather than extreme.
+BETA_SIZING_CLAMP = (0.25, 4.0)
 CAPITAL_BASE = 100000
 
 # Alpaca charges no commission on US equities; see costs.py. Set

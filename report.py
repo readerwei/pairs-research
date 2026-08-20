@@ -29,6 +29,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
+import data as rdata  # noqa: E402
 
 # promotion gate
 MIN_OOS_SHARPE = 0.50
@@ -97,11 +98,89 @@ def gate(row):
     if row['max_dd'] < MAX_OOS_DRAWDOWN:
         reasons.append('OOS drawdown %.1f%% worse than %.0f%%'
                        % (row['max_dd'] * 100, MAX_OOS_DRAWDOWN * 100))
-    if row['is_sharpe'] > 0 and row['sharpe'] < MIN_SHARPE_RETENTION * row['is_sharpe']:
+    # A config that lost money in sample must not reach live capital on the
+    # strength of its out-of-sample number alone. Guarding the retention check
+    # with `is_sharpe > 0` used to let exactly that through: CVX/XOM on the
+    # 2026-08-14 data has IS sharpe -0.02 and OOS 1.25, and skipped retention
+    # entirely. A negative in-sample Sharpe means the parameter search found
+    # nothing, so a good OOS number is the sampling noise the holdout exists to
+    # expose -- not evidence.
+    if row['is_sharpe'] <= 0:
+        reasons.append('IS sharpe %.2f is not positive -- OOS %.2f is '
+                       'unsupported by the in-sample window'
+                       % (row['is_sharpe'], row['sharpe']))
+    elif row['sharpe'] < MIN_SHARPE_RETENTION * row['is_sharpe']:
         reasons.append('kept only %.0f%% of IS sharpe (need %.0f%%)'
                        % (100.0 * row['sharpe'] / row['is_sharpe'],
                           100 * MIN_SHARPE_RETENTION))
     return (not reasons), reasons
+
+
+def residual_exposure(out_dir):
+    """How much of each pair's P&L was NOT spread convergence.
+
+    Dollar-neutral sizing holds the two legs 1:-1 regardless of the hedge
+    ratio, so the position is only the tested spread when that ratio happens to
+    be 1. Everything else leaks through as directional exposure to the second
+    leg. This regresses each pair's daily returns on leg B's daily returns and
+    reports the R^2 -- the share of P&L variance the pairs premise does not
+    explain.
+
+    Reported rather than gated on: the number is a property of the sizing
+    choice, not a defect of the pair, and the point is to keep it visible while
+    USE_BETA_SIZING is off. A pair whose hedge ratio sits near 1 will show a
+    low value regardless.
+    """
+    perf_dir = os.path.join(out_dir, 'perf')
+    if not os.path.isdir(perf_dir):
+        return {}
+
+    import numpy as np
+    out = {}
+    for fn in sorted(os.listdir(perf_dir)):
+        if not fn.endswith('_oos.pkl'):
+            continue
+        stem = fn[:-len('_oos.pkl')]
+        try:
+            sym_a, sym_b = stem.split('_', 1)
+        except ValueError:
+            continue
+        perf = pd.read_pickle(os.path.join(perf_dir, fn))
+        rets = perf.returns.astype(float)
+        try:
+            px = rdata.close_prices(rets.index[0], rets.index[-1],
+                                    symbols=[sym_a, sym_b])
+        except Exception:
+            continue
+        if sym_b not in px.columns:
+            continue
+        rb = np.log(px[sym_b].astype(float)).diff()
+        # Both indexes are tz-aware UTC but sit at different times of day: the
+        # perf frame stamps each row at the session close (20:00Z) while the
+        # bundle stamps bars at midnight. Joining them directly matches nothing
+        # at all -- normalise to the session date on both sides.
+        rb.index = pd.DatetimeIndex(rb.index).tz_convert(None).normalize()
+        pair_idx = pd.DatetimeIndex(rets.index).tz_convert(None).normalize()
+        joined = pd.DataFrame({'pair': rets.values}, index=pair_idx).join(
+            rb.rename('legb'), how='inner').dropna()
+        # Only sessions the pair actually held anything: flat days contribute a
+        # zero return that would drag the correlation toward nothing and make
+        # the leak look smaller than it is.
+        if 'gross' in perf:
+            g = perf['gross'].astype(float)
+            g.index = pd.DatetimeIndex(g.index).tz_convert(None).normalize()
+            joined = joined[g.reindex(joined.index).abs() > 0.01]
+        if len(joined) < 30 or joined.legb.std() == 0:
+            continue
+        r = float(joined.pair.corr(joined.legb))
+        out['%s/%s' % (sym_a, sym_b)] = {
+            'corr_with_leg_b': r,
+            'r_squared': r ** 2,
+            'beta_on_leg_b': float(np.polyfit(joined.legb.values,
+                                              joined.pair.values, 1)[0]),
+            'sessions': len(joined),
+        }
+    return out
 
 
 def main():
@@ -111,13 +190,18 @@ def main():
 
     out_dir = config.run_dir(args.date)
     date_str = os.path.basename(out_dir)
-    start, end = config.session_range()
+    # rdata.session_range(), not config's: config computes the window from the
+    # exchange calendar, which knows about today, while the bundle stops at its
+    # last ingest. When the two disagree -- pairs_research ending 2026-08-14
+    # while the calendar has opened 2026-08-18 -- zipline raises a bare
+    # KeyError from deep inside the history loader instead of saying the bundle
+    # is stale.
+    start, end = rdata.session_range()
     is_start, is_end, oos_start, oos_end = config.split_sessions(start, end)
 
     lines = []
     add = lines.append
     try:
-        import data as rdata
         n_syms = len(rdata.available_symbols())
     except Exception:
         n_syms = len(config.UNIVERSE)
@@ -173,6 +257,26 @@ def main():
         add('')
 
     stats = tear_sheets(out_dir)
+
+    resid = residual_exposure(out_dir)
+    if resid:
+        add('## Residual exposure to leg B (out-of-sample)\n')
+        add('Share of each pair\'s P&L variance explained by leg B\'s own '
+            'returns rather than by\nthe spread converging. Sizing is '
+            '%s.\n'
+            % ('hedge-ratio weighted (USE_BETA_SIZING=1)'
+               if config.USE_BETA_SIZING else
+               'dollar-neutral 1:-1, so any hedge ratio away from 1.0 leaks '
+               'directional exposure'))
+        rt = pd.DataFrame(resid).T
+        rt.index.name = 'pair'
+        add(rt.round(3).to_string())
+        add('')
+        add('A high r_squared does not make a pair invalid -- it means that '
+            'much of what the\nbacktest scored was single-name direction, not '
+            'the mean reversion being tested.')
+        add('')
+
     if stats:
         add('## Risk statistics (pyfolio, out-of-sample)\n')
         table = pd.DataFrame(stats)

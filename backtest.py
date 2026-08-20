@@ -35,7 +35,24 @@ import config  # noqa: E402
 import data as rdata  # noqa: E402
 import strategy  # noqa: E402
 
-MIN_ROUND_TRIPS = 6      # in-sample; below this the Sharpe is an accident
+# In-sample round-trip floor, DERIVED from the out-of-sample one rather than
+# picked. report.MIN_OOS_ROUND_TRIPS applies to the OOS window; this applies to
+# the IS window, and the two are different lengths. A flat 6 meant a config
+# scraping through IS (629 sessions) projected to ~3 round trips over OOS (311
+# sessions) against a floor of 5 -- pre-destined to fail the gate it was being
+# selected for. Scaling by the window ratio makes the two agree.
+#
+#   IS sessions / OOS sessions = (1 - OOS_FRACTION) / OOS_FRACTION
+#
+# The +1 is a margin: trade frequency decays out of sample more often than it
+# rises, so matching the projection exactly still fails about half the time.
+def _min_round_trips():
+    import report
+    ratio = (1.0 - config.OOS_FRACTION) / config.OOS_FRACTION
+    return int(np.ceil(report.MIN_OOS_ROUND_TRIPS * ratio)) + 1
+
+
+MIN_ROUND_TRIPS = _min_round_trips()      # 13 at OOS_FRACTION=0.30, floor 5
 
 _BENCH = {}
 
@@ -101,9 +118,23 @@ def run_one(sym_a, sym_b, lookback, entry_z, exit_z, start, end,
     return m, perf
 
 
-def grid_for_pair(sym_a, sym_b, start, end):
+def grid_for_pair(sym_a, sym_b, start, end, half_life=None):
+    """In-sample grid for one pair.
+
+    When config.USE_HALF_LIFE_WINDOW is on and the screen measured a usable
+    half-life, `lookback` is not searched: it is derived once from that
+    half-life and held fixed while entry_z/exit_z vary. That drops the grid
+    from ~15 configs to ~5 and removes the parameter that was doing the most
+    overfitting -- see config.window_for_half_life.
+    """
+    if config.USE_HALF_LIFE_WINDOW:
+        w = config.window_for_half_life(half_life)
+        lookbacks = [w] if w is not None else config.GRID_LOOKBACK
+    else:
+        lookbacks = config.GRID_LOOKBACK
+
     rows = []
-    combos = list(itertools.product(config.GRID_LOOKBACK, config.GRID_ENTRY_Z,
+    combos = list(itertools.product(lookbacks, config.GRID_ENTRY_Z,
                                     config.GRID_EXIT_Z))
     for lb, ez, xz in combos:
         if xz >= ez:
@@ -146,7 +177,13 @@ def main():
                     help='with --pair: run on the out-of-sample window')
     args = ap.parse_args()
 
-    start, end = config.session_range()
+    # rdata.session_range(), not config's: config computes the window from the
+    # exchange calendar, which knows about today, while the bundle stops at its
+    # last ingest. When the two disagree -- pairs_research ending 2026-08-14
+    # while the calendar has opened 2026-08-18 -- zipline raises a bare
+    # KeyError from deep inside the history loader instead of saying the bundle
+    # is stale.
+    start, end = rdata.session_range()
     is_start, is_end, oos_start, oos_end = config.split_sessions(start, end)
     out_dir = config.run_dir(args.date)
 
@@ -174,8 +211,15 @@ def main():
     all_is, winners = [], []
     for _, c in cands.iterrows():
         a, b = c['sym_a'], c['sym_b']
-        print('  %s / %s  (%s)' % (a, b, c['group']))
-        g = grid_for_pair(a, b, is_start, is_end)
+        hl = c.get('half_life')
+        if config.USE_HALF_LIFE_WINDOW:
+            w = config.window_for_half_life(hl)
+            print('  %s / %s  (%s)  half-life %.1f -> window %s'
+                  % (a, b, c['group'], hl,
+                     w if w is not None else 'unusable, grid search'))
+        else:
+            print('  %s / %s  (%s)' % (a, b, c['group']))
+        g = grid_for_pair(a, b, is_start, is_end, half_life=hl)
         if g.empty:
             print('    no completed runs\n')
             continue

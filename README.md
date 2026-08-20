@@ -40,13 +40,13 @@ pyfolio is not installed the report still works and just skips that section.
 
 A pass evaluates roughly 2,000 hypotheses: ~150 candidate pairs through the
 screen, then ~15 parameter combinations for each survivor. At that search
-intensity the best in-sample result is overfit essentially by construction —
+At that search intensity the best in-sample result is overfit essentially by construction —
 with 150 pairs tested at p ≤ 0.05, about 8 will pass the cointegration gate on
 noise alone.
 
 So in-sample output is treated as a list of things worth testing, never as
 evidence. For each pair exactly one config — the in-sample Sharpe winner, among
-those with at least 6 round trips — is carried to out-of-sample and scored once.
+those with at least 13 round trips — is carried to out-of-sample and scored once.
 Running the grid on the holdout and reporting the best number is the same as
 having no holdout.
 
