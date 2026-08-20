@@ -47,6 +47,18 @@ from zipline.api import (get_open_orders, order_target_percent, record,
                          set_commission, set_max_leverage, set_slippage, symbol)
 from zipline.finance import commission, slippage
 
+# Broker-rejection exceptions we must not let propagate out of handle_data:
+# an uncaught one kills the whole live_runner.py process (see _apply_targets).
+try:
+    from alpaca_trade_api.rest import APIError as _AlpacaAPIError
+except Exception:                        # pragma: no cover - backtest/sim mode
+    _AlpacaAPIError = ()
+try:
+    from requests.exceptions import HTTPError as _HTTPError
+except Exception:                        # pragma: no cover
+    _HTTPError = ()
+_ORDER_REJECT_EXCEPTIONS = tuple(e for e in (_AlpacaAPIError, _HTTPError) if e)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
@@ -124,7 +136,20 @@ def _apply_targets(context, data, new_target):
         if increasing and context.account.leverage >= MAX_LEVERAGE:
             context.n_blocked += 1
             continue
-        order_target_percent(asset, tgt * context.weight)
+        try:
+            order_target_percent(asset, tgt * context.weight)
+        except _ORDER_REJECT_EXCEPTIONS as e:
+            # Broker rejected the order (e.g. 403 insufficient buying power
+            # when overnight holds have already committed most of the cash).
+            # Skip this asset and keep the session alive -- an uncaught
+            # exception here kills live_runner.py's whole process (rc=1,
+            # requiring the wrapper's restart-on-crash loop to recover).
+            # Do NOT advance context.target[asset]: the order never took
+            # effect, so the next bar should retry it as still-pending.
+            print('WARNING: order rejected for %s target=%.4f: %s' %
+                  (asset, tgt, e))
+            context.n_blocked += 1
+            continue
         context.target[asset] = tgt
         context.n_orders += 1
 
