@@ -73,8 +73,9 @@ def johansen(ya, xb, max_lag=10):
         # select an order that eats the degrees of freedom.
         k = VAR(df.values).select_order(maxlags=max_lag).selected_orders['aic']
         k = max(1, int(k))
-        # VECM/Johansen uses k_ar_diff = VAR_lag_order - 1
-        cj = coint_johansen(df.values, det_order=0, k_ar_diff=max(1, k - 1))
+        # VECM/Johansen uses k_ar_diff = VAR_lag_order - 1. k_ar_diff=0 is valid
+        # (no lagged differences in the VECM), so we allow 0 when VAR order is 1.
+        cj = coint_johansen(df.values, det_order=0, k_ar_diff=k - 1)
         w = cj.evec[:, cj.ind[0]]
         hr = float(-w[1] / w[0]) if w[0] != 0 else np.nan
         return float(cj.lr1[0]), float(cj.lr1[1]), hr
@@ -110,7 +111,9 @@ def pair_stats(px, a, b):
 
     ya = np.log(sub[a].values.astype(float))
     xb = np.log(sub[b].values.astype(float))
-    if ya.std() == 0 or xb.std() == 0:
+    # Tolerance instead of exact zero: constant prices give log-std ~1e-16,
+    # not exactly 0.0. Anything below 1e-12 is effectively flat.
+    if ya.std() < 1e-12 or xb.std() < 1e-12:
         return None
 
     rets = np.log(sub).diff().dropna()
