@@ -73,7 +73,8 @@ def johansen(ya, xb, max_lag=10):
         # select an order that eats the degrees of freedom.
         k = VAR(df.values).select_order(maxlags=max_lag).selected_orders['aic']
         k = max(1, int(k))
-        cj = coint_johansen(df.values, det_order=0, k_ar_diff=k)
+        # VECM/Johansen uses k_ar_diff = VAR_lag_order - 1
+        cj = coint_johansen(df.values, det_order=0, k_ar_diff=max(1, k - 1))
         w = cj.evec[:, cj.ind[0]]
         hr = float(-w[1] / w[0]) if w[0] != 0 else np.nan
         return float(cj.lr1[0]), float(cj.lr1[1]), hr
@@ -162,13 +163,13 @@ def screen(px, keep_all=False):
             continue
         st['group'] = group
         st['eg_sig'] = bool(st['coint_p'] <= config.MAX_COINT_PVALUE)
-        # Johansen agrees only when BOTH trace statistics clear -- trace0
-        # rejects "no cointegration" and trace1 confirms rank is not higher
-        # than the single relationship a pair can support.
+        # Johansen rank test for a 2-variable system with exactly one cointegrating
+        # relationship: trace0 rejects rank=0 (trace0 > cv0), trace1 fails to
+        # reject rank<=1 (trace1 <= cv1). Both must hold for r=1.
         st['johansen_sig'] = bool(
             np.isfinite(st['trace0']) and
             st['trace0'] > config.JOHANSEN_TRACE0_CV and
-            st['trace1'] > config.JOHANSEN_TRACE1_CV)
+            st['trace1'] <= config.JOHANSEN_TRACE1_CV)
         coint_ok = (st['eg_sig'] and st['johansen_sig']
                     if config.REQUIRE_BOTH_COINT_TESTS else st['eg_sig'])
         st['passes'] = bool(
